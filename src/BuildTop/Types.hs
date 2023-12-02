@@ -1,7 +1,9 @@
 {-# Language DataKinds #-}
 {-# Language DefaultSignatures #-}
+{-# Language DeriveTraversable #-}
 {-# Language FlexibleContexts #-}
 {-# Language GADTs #-}
+{-# Language StandaloneDeriving #-}
 {-# Language TypeFamilies #-}
 
 module BuildTop.Types where
@@ -34,7 +36,7 @@ type LockFileExists = Bool
 class HasChildren (l :: WatchLayer) where
     type ChildContainer l :: Type -> Type
     type ChildLayer l :: WatchLayer
-    getChildren :: Watcher l t -> ChildContainer l (Watcher (ChildLayer l) t)
+    getChildren :: Watcher l t a -> ChildContainer l (Watcher (ChildLayer l) t a)
 
 instance HasChildren 'RootLayer where
     type ChildContainer 'RootLayer = HashMap Category
@@ -62,80 +64,67 @@ class IsWatcher (l :: WatchLayer) where
     watcherType _ = WatchDirectory
 
     -- | Return the @a@ from the data structure
-    getEvent :: Watcher l t -> Event t MyEvent
+    getWatcher :: Watcher l t a -> a
 
     -- | Return the @a@ from the data structure as well as all @a@s from the
     --   child tree
-    getEvents :: Watcher l t -> [Event t MyEvent]
-    default getEvents
+    getWatchers :: Watcher l t a -> [a]
+    default getWatchers
         :: (HasChildren l, IsWatcher (ChildLayer l), Foldable (ChildContainer l))
-        => Watcher l t -> [Event t MyEvent]
-    getEvents w = getEvent w : foldMap getEvents (getChildren w)
-
-    -- | Return the 'Inotify.Watch' from the data structure
-    getWatch :: Watcher l t -> Inotify.Watch
-
-    -- | Return the 'Inotify.Watch' from the data structure as well as all
-    --   'Inotify.Watch' instances from the child tree
-    getWatches :: Watcher l t -> [Inotify.Watch]
-    default getWatches
-        :: (HasChildren l, IsWatcher (ChildLayer l), Foldable (ChildContainer l))
-        => Watcher l t -> [Inotify.Watch]
-    getWatches w = getWatch w : foldMap getWatches (getChildren w)
+        => Watcher l t a -> [a]
+    getWatchers w = getWatcher w : foldMap getWatchers (getChildren w)
 
 instance IsWatcher 'RootLayer where
-    getEvent = rootWatcher_Event
-    getWatch = rootWatcher_Watch
+    getWatcher = rootWatcher_Data
 
 instance IsWatcher 'CategoryLayer where
-    getEvent = categoryWatcher_Event
-    getWatch = categoryWatcher_Watch
+    getWatcher = categoryWatcher_Data
 
 instance IsWatcher 'PackageLayer where
-    getEvent = packageWatcher_Event
-    getWatch = packageWatcher_Watch
+    getWatcher = packageWatcher_Data
 
 instance IsWatcher 'TempDirLayer where
-    getEvent = tempDirWatcher_Event
-    getWatch = tempDirWatcher_Watch
+    getWatcher = tempDirWatcher_Data
 
 instance IsWatcher 'LogFileLayer where
     watcherType _ = WatchFile
-    getEvent = logFileWatcher_Event
-    getEvents = (:[]) . getEvent
-    getWatch = logFileWatcher_Watch
-    getWatches = (:[]) . getWatch
+    getWatcher = logFileWatcher_Data
+    getWatchers = (:[]) . getWatcher
 
-data Watcher (l :: WatchLayer) t where
+data WatcherData t = WatcherData
+    { getWatch :: Inotify.Watch
+    , getEvent :: Event t MyEvent
+    }
+
+data Watcher (l :: WatchLayer) t a where
     RootWatcher ::
-        { rootWatcher_Children :: HashMap Category (Watcher 'CategoryLayer t)
+        { rootWatcher_Children :: HashMap Category (Watcher 'CategoryLayer t a)
         , rootWatcher_Path :: FilePath
-        , rootWatcher_Watch :: Inotify.Watch
-        , rootWatcher_Event :: Event t MyEvent
-        } -> Watcher 'RootLayer t
+        , rootWatcher_Data :: a
+        } -> Watcher 'RootLayer t a
     CategoryWatcher ::
-        { categoryWatcher_Children :: HashMap Package (LockFileExists, Watcher 'PackageLayer t)
+        { categoryWatcher_Children :: HashMap Package (LockFileExists, Watcher 'PackageLayer t a)
         , categoryWatcher_Category :: Category
-        , categoryWatcher_Watch :: Inotify.Watch
-        , categoryWatcher_Event :: Event t MyEvent
-        } -> Watcher 'CategoryLayer t
+        , categoryWatcher_Data :: a
+        } -> Watcher 'CategoryLayer t a
     PackageWatcher ::
-        { packageWatcher_Children :: Maybe (Watcher 'TempDirLayer t)
+        { packageWatcher_Children :: Maybe (Watcher 'TempDirLayer t a)
         , packageWatcher_Package :: Package
-        , packageWatcher_Watch :: Inotify.Watch
-        , packageWatcher_Event :: Event t MyEvent
-        } -> Watcher 'PackageLayer t
+        , packageWatcher_Data :: a
+        } -> Watcher 'PackageLayer t a
     TempDirWatcher ::
-        { tempDirWatcher_Children :: Maybe (Watcher 'LogFileLayer t)
+        { tempDirWatcher_Children :: Maybe (Watcher 'LogFileLayer t a)
         , tempDirWatcher_Package :: Package
-        , tempDirWatcher_Watch :: Inotify.Watch
-        , tempDirWatcher_Event :: Event t MyEvent
-        } -> Watcher 'TempDirLayer t
+        , tempDirWatcher_Data :: a
+        } -> Watcher 'TempDirLayer t a
     LogFileWatcher ::
-        { logFileWatcher_Package :: Package
-        , logFileWatcher_Watch :: Inotify.Watch
-        , logFileWatcher_Event :: Event t MyEvent
-        } -> Watcher 'LogFileLayer t
+        { logFileWatcherWatcher_Package :: Package
+        , logFileWatcher_Data :: a
+        } -> Watcher 'LogFileLayer t a
+
+deriving instance Functor (Watcher l t)
+deriving instance Foldable (Watcher l t)
+deriving instance Traversable (Watcher l t)
 
 -- | A function to fire an Event and a filter to decide which events get fired
 type WatchMap = HashMap Inotify.Watch
@@ -143,7 +132,7 @@ type WatchMap = HashMap Inotify.Watch
     , Inotify.Event -> Maybe BuildTopEvent
     )
 
-type BuildTopState t = (Watcher 'RootLayer t, WatchMap)
+type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
 
 data EventType
     = AddEvent

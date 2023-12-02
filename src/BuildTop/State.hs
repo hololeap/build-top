@@ -104,15 +104,15 @@ scanState inot path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
                             p
                             (path3 </> l)
 
-                    pure $ LogFileWatcher p iWatch4 rEvent4
+                    pure $ LogFileWatcher p (WatcherData iWatch4 rEvent4)
 
-                pure $ TempDirWatcher child3 p iWatch3 rEvent3
+                pure $ TempDirWatcher child3 p (WatcherData iWatch3 rEvent3)
 
-            pure $ (lockFilePresent, PackageWatcher child2 p iWatch2 rEvent2)
+            pure $ (lockFilePresent, PackageWatcher child2 p (WatcherData iWatch2 rEvent2))
 
-        pure $ CategoryWatcher child1 c iWatch1 rEvent1
+        pure $ CategoryWatcher child1 c (WatcherData iWatch1 rEvent1)
 
-    pure $ RootWatcher child0 path0 iWatch0 rEvent0
+    pure $ RootWatcher child0 path0 (WatcherData iWatch0 rEvent0)
   where
     watcherHelper
         :: ( IsWatcher l

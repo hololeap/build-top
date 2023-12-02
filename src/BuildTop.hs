@@ -66,8 +66,8 @@ eventLoop i wmRef = liftIO $ async $ forever $ do
 updateWatchState
     :: Inotify.Inotify
     -> Inotify.Event
-    -> Watcher 'RootLayer t
-    -> Watcher 'RootLayer t
+    -> Watcher 'RootLayer t (WatcherData t)
+    -> Watcher 'RootLayer t (WatcherData t)
 updateWatchState i e rw = case
     ( check Inotify.in_ISDIR
     , check Inotify.in_CREATE

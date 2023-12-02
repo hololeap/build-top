@@ -30,7 +30,7 @@ app = mdo
         eventLoop i wmRef
         liftIO $ print $ M.size $ rootWatcher_Children rw
 --         pPrintForceColor $ "Size of getEvents: " ++ show (length (getEvents rw))
-        let e = mergeList $ getEvents rw
+        let e = mergeList $ map getEvent (getWatchers rw)
         -- performEvent $ liftIO . (\e -> pPrintForceColor e *> pPrintForceColor (printEvent e)) <$> e
         performEvent $ liftIO . pPrintForceColor . (fmap (first (printEvent rw))) <$> e
     liftIO $ putStrLn "end of 'app'"

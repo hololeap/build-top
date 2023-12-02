@@ -13,7 +13,7 @@ import BuildTop.Types
 
 import Prelude hiding (filter)
 
-printEvent :: Watcher 'RootLayer t -> Inotify.Event -> (String, String, [String])
+printEvent :: Watcher 'RootLayer t (WatcherData t) -> Inotify.Event -> (String, String, [String])
 printEvent rw e =
     ( show $ locateWatch rw (Inotify.wd e)
     , show e
@@ -42,23 +42,26 @@ printEvent rw e =
         , (Inotify.in_UNMOUNT, "UNMOUNT", "Filesystem containing watched object was unmounted")
         ]
 
-locateWatch :: Watcher 'RootLayer t -> Inotify.Watch -> Maybe (Maybe (Category, Maybe Package))
-locateWatch (RootWatcher m0 _ w0 _) w
+locateWatch
+    :: Watcher 'RootLayer t (WatcherData t)
+    -> Inotify.Watch
+    -> Maybe (Maybe (Category, Maybe Package))
+locateWatch (RootWatcher m0 _ (WatcherData w0 _)) w
     | w == w0 = Just Nothing
     | otherwise = getFirst $ foldMap lwCat m0
   where
-    lwCat (CategoryWatcher m1 c w1 _)
+    lwCat (CategoryWatcher m1 c (WatcherData w1 _))
         | w == w1 = First $ Just $ Just (c, Nothing)
         | otherwise = foldMap (lwPkg . snd) m1
       where
-        lwPkg (PackageWatcher m2 p w2 _)
+        lwPkg (PackageWatcher m2 p (WatcherData w2 _))
             | w == w2 = First $ Just $ Just (c, Just p)
             | otherwise = foldMap lwTD m2
           where
-            lwTD (TempDirWatcher m3 _ w3 _)
+            lwTD (TempDirWatcher m3 _ (WatcherData w3 _))
                 | w == w3 = First $ Just $ Just (c, Just p)
                 | otherwise = foldMap lwLF m3
-            lwLF (LogFileWatcher _ w4 _)
+            lwLF (LogFileWatcher _ (WatcherData w4 _))
                 | w == w4 = First $ Just $ Just (c, Just p)
                 | otherwise = First Nothing
 
