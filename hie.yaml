@@ -1,0 +1,13 @@
+cradle:
+  cabal:
+    - path: "./src"
+      component: "lib:build-top"
+
+    - path: "./src-exe/Main.hs"
+      component: "build-top:exe:build-top"
+
+    - path: "./test"
+      component: "build-top:test:build-top-test"
+
+    - path: "./src-exe/libtelnet-example.hs"
+      component: "build-top:exe:libtelnet-example"

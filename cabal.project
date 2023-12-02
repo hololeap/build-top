@@ -1,0 +1,19 @@
+packages: .
+
+source-repository-package
+    type: git
+    location: https://github.com/hololeap/cabal-portage
+    tag: 11589c22ab62e5f106af38cdfd8da17415f5e03a
+    subdir: parsable
+
+source-repository-package
+    type: git
+    location: https://github.com/hololeap/cabal-portage
+    tag: 11589c22ab62e5f106af38cdfd8da17415f5e03a
+    subdir: parsable-test
+
+source-repository-package
+    type: git
+    location: https://github.com/hololeap/cabal-portage
+    tag: 11589c22ab62e5f106af38cdfd8da17415f5e03a
+    subdir: portage-hs

@@ -3,31 +3,79 @@ name:               build-top
 version:            0.1.0.0
 synopsis:           Monitor running Gentoo builds
 
--- A longer description of the package.
--- description:
-homepage:           https://github.com/hololeap/build-top
+tested-with:        GHC == { 9.0.2, 9.2.8, 9.4.8 }
 
--- A URL where users can report bugs.
--- bug-reports:
-license:            GPL-3.0-only
+description:
+    Watches the build directory for Portage and displays running builds
+    in a TUI.
+
+homepage:           https://github.com/hololeap/build-top
+bug-reports:        https://github.com/hololeap/build-top/issues
+
+license:            AGPL-3.0-only
 license-file:       LICENSE
 author:             hololeap
-maintainer:         hololeap@users.noreply.github.com
+maintainer:         hololeap@protonmail.com
 
--- A copyright notice.
--- copyright:
+copyright:          Copyright (C) 2023 hololeap
 category:           System
-extra-source-files: CHANGELOG.md
+extra-doc-files:
+    , CHANGELOG.md
+    , README.md
+
+source-repository head
+    type:           git
+    location:       git://github.com/hololeap/build-top.git
+    branch:         main
+    subdir:         portage-hs
+
+flag pedantic
+    description: Enable -Werror
+    default:     False
+    manual:      True
+
+common all
+    ghc-options:        -Wall
+                        -foptimal-applicative-do
+    if flag(pedantic)
+        ghc-options:    -Werror
+
+common fast
+    ghc-options:        -threaded
+                        -with-rtsopts=-N
 
 library
-    exposed-modules:  MyLib
+    import: all
+    exposed-modules:
+        , BuildTop
+        , BuildTop.Debug
+        , BuildTop.Filters
+        , BuildTop.State
+        , BuildTop.Types
+        , BuildTop.Util
 
     -- Modules included in this library but not exported.
     -- other-modules:
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base ^>=4.16.4.0
+    build-depends:
+        , base >=4.14 && <4.18
+        , async
+        , bytestring
+        , containers
+        , directory
+        , filepath
+        , linux-inotify >=0.3
+        , mtl
+        , parsable
+        , portage-hs
+        , pretty-simple
+        , reflex >=0.9
+        , text
+        , transformers
+        , unordered-containers
+        , witherable
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -40,8 +88,13 @@ executable build-top
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
-        base ^>=4.16.4.0,
-        build-top
+        , base >=4.14 && <4.18
+        , build-top
+        , linux-inotify
+        , pretty-simple
+        , reflex
+        , transformers
+        , unordered-containers
 
     hs-source-dirs:   src-exe
     default-language: Haskell2010
@@ -51,4 +104,5 @@ test-suite build-top-test
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
     main-is:          MyLibTest.hs
-    build-depends:    base ^>=4.16.4.0
+    build-depends:
+        , base >=4.14 && <4.18
