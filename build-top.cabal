@@ -22,6 +22,7 @@ category:           System
 extra-doc-files:
     , CHANGELOG.md
     , README.md
+    , TODO.md
 
 source-repository head
     type:           git
