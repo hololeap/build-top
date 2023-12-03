@@ -3,6 +3,7 @@
 {-# Language FlexibleContexts #-}
 {-# Language RecursiveDo #-}
 {-# Language ScopedTypeVariables #-}
+{-# Language TupleSections #-}
 {-# Language TypeApplications #-}
 
 module BuildTop.State where
@@ -12,10 +13,9 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Maybe
-import Data.Bifunctor (first)
-import Data.Bitraversable
 import Data.Either (partitionEithers)
 import Data.Foldable
+import Data.Hashable
 import qualified Data.HashMap.Strict as M
 import Data.Maybe (catMaybes)
 import Data.Proxy
@@ -36,83 +36,60 @@ import BuildTop.Util
 
 import Debug.Pretty.Simple
 
+-- | Scan the portage temp directory, building the current @BuildTopState@.
+--   Will return @Nothing@ if the portage temp directory does not exist.
 scanState :: (Reflex t, TriggerEvent t m, MonadIO m)
     => Inotify.Inotify
     -> FilePath
     -> m (Maybe (BuildTopState t))
 scanState inot path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
     -- Create the watcher for the root temp portage directory
-    (iWatch0, rEvent0) <-
-        watcherHelper
-            (Proxy @'RootLayer)
-            ()
-            path0
+    data0 <- watcherHelper (Proxy @'RootLayer) () path0
 
     -- Gather a list of categories with existing directories
     cs :: [Category] <- mapMaybe parseMaybe
         <$> lenientListDirectory path0
 
-    child0 <- fmap (M.fromList . zip cs . catMaybes) $ forM cs $ \c -> runMaybeT $ do
+    child0 <- buildMapFromKeys cs $ \c -> do
         -- Create the watcher for the category directory
         let path1 = path0 </> toString c
-        (iWatch1, rEvent1) <-
-            watcherHelper
-                (Proxy @'CategoryLayer)
-                c
-                path1
+        data1 <- watcherHelper (Proxy @'CategoryLayer) c path1
 
         -- Gather a set of packages with existing lockfiles and a
         -- list of packages with existing directories
-        fs1 <- lenientListDirectory path1
-        let (ls, ps) :: (Set Package, [Package]) =
-                first mconcat $ partitionEithers $ mapMaybe
-                    (\f ->
-                        (Left . S.singleton <$> lockFilePackage c f)
-                        <|> (Right <$> parseMaybe (toString c </> f))
-                    )
-                    fs1
+        (ls,ps) <- scanPackages c <$> lenientListDirectory path1
 
         -- Create the HashMap containing LockFilePresents and PackageWatches
-        child1 <- fmap (M.fromList . zip ps . catMaybes) $ forM ps $ \p -> runMaybeT $ do
+        child1 <- buildMapFromKeys ps $ \p -> do
             -- Create the watcher for the package dir
             let path2 = path0 </> toString p
-            (iWatch2, rEvent2) <-
-                watcherHelper
-                    (Proxy @'PackageLayer)
-                    p
-                    path2
+            data2 <- watcherHelper (Proxy @'PackageLayer) p path2
 
             -- does the lock file exist?
             let lockFilePresent = p `S.member` ls
 
             -- does the temp dir exist?
             fs2 <- lenientListDirectory path2
-            child2 <- forM (find (== "temp") fs2) $ \t -> do
+            let t = "temp"
+            child2 <- whenFound t fs2 $ do
                 let path3 = path2 </> t
-                (iWatch3, rEvent3) <-
-                    watcherHelper
-                        (Proxy @'TempDirLayer)
-                        p
-                        path3
+                data3 <- watcherHelper (Proxy @'TempDirLayer) p path3
 
                 -- does the log file exist?
                 fs3 <- lenientListDirectory path3
-                child3 <- forM (find (== "build.log") fs3) $ \l -> do
-                    (iWatch4, rEvent4) <-
-                        watcherHelper
-                            (Proxy @'LogFileLayer)
-                            p
-                            (path3 </> l)
+                let l = "build.log"
+                child3 <- whenFound l fs3 $ do
+                    let path4 = path3 </> l
+                    data4 <- watcherHelper (Proxy @'LogFileLayer) p path4
+                    pure $ LogFileWatcher p data4
 
-                    pure $ LogFileWatcher p (WatcherData iWatch4 rEvent4)
+                pure $ TempDirWatcher child3 p data3
 
-                pure $ TempDirWatcher child3 p (WatcherData iWatch3 rEvent3)
+            pure $ (lockFilePresent, PackageWatcher child2 p data2)
 
-            pure $ (lockFilePresent, PackageWatcher child2 p (WatcherData iWatch2 rEvent2))
+        pure $ CategoryWatcher child1 c data1
 
-        pure $ CategoryWatcher child1 c (WatcherData iWatch1 rEvent1)
-
-    pure $ RootWatcher child0 path0 (WatcherData iWatch0 rEvent0)
+    pure $ RootWatcher child0 path0 data0
   where
     watcherHelper
         :: ( IsWatcher l
@@ -125,7 +102,7 @@ scanState inot path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
         => Proxy l
         -> FilterInput l
         -> FilePath
-        -> MaybeT m (Inotify.Watch, Event t MyEvent)
+        -> MaybeT m (WatcherData t)
     watcherHelper proxy filtIn path = do
         let check = case watcherType proxy of
                 WatchDirectory -> doesDirectoryExist
@@ -137,10 +114,34 @@ scanState inot path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
 
         pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
 
-        pure (iWatch, rEvent)
+        pure $ WatcherData iWatch rEvent
+
+    buildMapFromKeys
+        :: forall m k v. (Monad m, Hashable k)
+        => [k] -> (k -> MaybeT m v) -> m (M.HashMap k v)
+    buildMapFromKeys ks f =
+        let mkTuple k = runMaybeT $ (k,) <$> f k
+        in  M.fromList . catMaybes <$> traverse mkTuple ks
+
+    whenFound :: (Monad m, Foldable t, Eq a) => a -> t a -> m b -> m (Maybe b)
+    whenFound x xs = forM (find (== x) xs) . const
+
+    -- Scan a list of FilePaths, sorting them into a set of lockfiles and a
+    -- list of packages (directories).
+    scanPackages :: Category -> [FilePath] -> (Set Package, [Package])
+    scanPackages c fs =
+        let (lockPs, pkgPs) = partitionEithers (mapMaybe identifyPath fs)
+        in (S.fromList lockPs, pkgPs)
+      where
+        identifyPath :: FilePath -> Maybe (Either Package Package)
+        identifyPath f
+            =   Left <$> lockFilePackage c f
+            <|> Right <$> parseMaybe (toString c </> f)
 
     finish :: Functor f => f (Maybe a, b) -> f (Maybe (a, b))
-    finish = fmap (bitraverse id Just)
+    finish = fmap $ \(ma, b) -> (,b) <$> ma
 
+-- | If an IO error is thrown, do not raise the error but instead return an
+--   empty list.
 lenientListDirectory :: MonadIO m => FilePath -> m [FilePath]
 lenientListDirectory fp = liftIO $ listDirectory fp <|> pure []

@@ -66,6 +66,7 @@ library
         , containers
         , directory
         , filepath
+        , hashable
         , linux-inotify >=0.3
         , mtl
         , parsable
