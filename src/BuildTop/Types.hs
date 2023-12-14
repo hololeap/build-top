@@ -8,7 +8,9 @@
 
 module BuildTop.Types where
 
+import Control.Monad.IO.Class
 import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as M
 import Data.Kind
 import qualified System.Linux.Inotify as Inotify
 import Reflex
@@ -35,28 +37,64 @@ type LockFileExists = Bool
 
 class HasChildren (l :: WatchLayer) where
     type ChildContainer l :: Type -> Type
+    type ChildContainerKey l :: Type
     type ChildLayer l :: WatchLayer
     getChildren :: Watcher l t a -> ChildContainer l (Watcher (ChildLayer l) t a)
+    deleteChild :: MonadIO m
+        => (a -> m ()) -- ^ cleanup function to run on data
+        -> ChildContainerKey l
+        -> Watcher l t a
+        -> m (Watcher l t a)
 
 instance HasChildren 'RootLayer where
     type ChildContainer 'RootLayer = HashMap Category
+    type ChildContainerKey 'RootLayer = Category
     type ChildLayer 'RootLayer = 'CategoryLayer
     getChildren = rootWatcher_Children
+    deleteChild f k w0 = do
+        c <- M.alterF go k (rootWatcher_Children w0)
+        pure w0 { rootWatcher_Children = c }
+      where
+        go = deleteHelper f $ \w -> do
+            let ps = M.keys $ snd <$> categoryWatcher_Children w
+            mapM_ (\p -> deleteChild f p w) ps
 
 instance HasChildren 'CategoryLayer where
     type ChildContainer 'CategoryLayer = HashMap Package
+    type ChildContainerKey 'CategoryLayer = Package
     type ChildLayer 'CategoryLayer = 'PackageLayer
     getChildren = fmap snd . categoryWatcher_Children
 
+    deleteChild f k w0 = do
+        let go = deleteHelper f (deleteChild f ()) . fmap snd
+        c <- M.alterF go k (categoryWatcher_Children w0)
+        pure w0 { categoryWatcher_Children = c }
+
 instance HasChildren 'PackageLayer where
     type ChildContainer 'PackageLayer = Maybe
+    type ChildContainerKey 'PackageLayer = ()
     type ChildLayer 'PackageLayer = 'TempDirLayer
     getChildren = packageWatcher_Children
+    deleteChild f _ w0 = do
+        c <- deleteHelper f (deleteChild f ()) (getChildren w0)
+        pure w0 { packageWatcher_Children = c }
 
 instance HasChildren 'TempDirLayer where
     type ChildContainer 'TempDirLayer = Maybe
+    type ChildContainerKey 'TempDirLayer = ()
     type ChildLayer 'TempDirLayer = 'LogFileLayer
     getChildren = tempDirWatcher_Children
+    deleteChild f _ w0 = do
+        c <- deleteHelper f (\_ -> pure ()) (getChildren w0)
+        pure w0 { tempDirWatcher_Children = c }
+
+deleteHelper :: (IsWatcher l, Monad m)
+    => (a -> m ())
+    -> (Watcher l t a -> m b)
+    -> (Maybe (Watcher l t a))
+    -> m (Maybe c)
+deleteHelper f1 f2 m = Nothing <$ mapM_ go m
+    where go w = f1 (getWatcher w) *> f2 w
 
 class IsWatcher (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
