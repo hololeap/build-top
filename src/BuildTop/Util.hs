@@ -2,6 +2,7 @@
 
 module BuildTop.Util where
 
+import Control.Monad.Trans.Maybe
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -21,3 +22,7 @@ decodeString = T.unpack . T.decodeUtf8
 
 parseMaybe :: Parsable a Identity () String => String -> Maybe a
 parseMaybe = either (const Nothing) Just . runParsable ""
+
+-- | Lift a 'Maybe' value into a 'MaybeT'
+liftMaybe :: Applicative m => Maybe a -> MaybeT m a
+liftMaybe = MaybeT . pure

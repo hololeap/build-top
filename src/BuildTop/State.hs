@@ -257,6 +257,3 @@ updateWatchState i e rw = case
         _ -> undefined
   where
     check = Inotify.isSubset (Inotify.mask e)
-
-liftMaybe :: Applicative m => Maybe a -> MaybeT m a
-liftMaybe = MaybeT . pure
