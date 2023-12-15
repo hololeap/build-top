@@ -206,11 +206,6 @@ scanState inot path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
     finish :: Functor f => f (Maybe a, b) -> f (Maybe (a, b))
     finish = fmap $ \(ma, b) -> (,b) <$> ma
 
--- | If an IO error is thrown, do not raise the error but instead return an
---   empty list.
-lenientListDirectory :: MonadIO m => FilePath -> m [FilePath]
-lenientListDirectory fp = liftIO $ listDirectory fp <|> pure []
-
 initWatcher :: (IsWatcher l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
     => Proxy l
     -> FilterInput l
@@ -234,6 +229,7 @@ initWatcher proxy filtIn i p = do
     -- NOTE: This may create duplicate events if the 'Inotify.Watch' also
     -- catches the interesting content. This must be handled by the
     -- state-modifying code.
+
 
 
     pure (w, e, eIO)
