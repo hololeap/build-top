@@ -11,6 +11,7 @@
 module BuildTop.Types where
 
 import Control.Monad
+import Data.Functor.Identity
 import Data.Function
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
@@ -95,6 +96,14 @@ instance HasChildren 'TempDirLayer where
     filterWatcher f (TempDirWatcher cs0 p d) = do
         cs <- filterA f cs0
         pure $ TempDirWatcher cs p d
+
+-- | Delete a child specified by a @SimpleKey@. This will never delete
+--   the root.
+deleteChild :: HasChildren l => SimpleKey -> Watcher l t a -> Watcher l t a
+deleteChild key = runIdentity . filterWatcher go
+  where
+    go :: IsWatcher x => Watcher x t a -> Identity Bool
+    go w = Identity $ key /= toSimpleKey (watcherKey w)
 
 class IsWatcher (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
