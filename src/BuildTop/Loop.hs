@@ -1,5 +1,5 @@
 
-module BuildTop where
+module BuildTop.Loop where
 
 import Control.Concurrent.Async
 import Control.Monad

@@ -48,9 +48,9 @@ common fast
 library
     import: all
     exposed-modules:
-        , BuildTop
         , BuildTop.Debug
         , BuildTop.Filters
+        , BuildTop.Loop
         , BuildTop.State
         , BuildTop.Types
         , BuildTop.Util

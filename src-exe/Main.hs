@@ -15,8 +15,8 @@ import Reflex.Host.Headless
 import qualified System.Linux.Inotify as Inotify
 import Text.Pretty.Simple
 
-import BuildTop
 import BuildTop.Debug
+import BuildTop.Loop
 import BuildTop.State
 import BuildTop.Types
 import BuildTop.Util
