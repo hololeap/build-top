@@ -12,13 +12,14 @@ import Control.Monad.IO.Class
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
 import Data.Kind
+import Data.These
 import qualified System.Linux.Inotify as Inotify
 import Reflex
 
 import Distribution.Portage.Types
 
 -- | Useful for debugging, may be replaced with BuildTopEvent in the future
-type MyEvent = (Inotify.Event, Maybe BuildTopEvent)
+type MyEvent = These Inotify.Event BuildTopEvent
 
 data WatchType
     = WatchDirectory

@@ -75,6 +75,7 @@ library
         , pretty-simple
         , reflex >=0.9
         , text
+        , these
         , transformers
         , unordered-containers
         , witherable
