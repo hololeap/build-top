@@ -215,6 +215,23 @@ deriving instance Show (WatcherKey l)
 deriving instance Eq (WatcherKey l)
 deriving instance Ord (WatcherKey l)
 
+-- | Representation of @WatcherKey@ with type-level tag removed. This allows
+--   for e.g. comparing keys from different levels.
+data SimpleKey
+    = RootSimple
+    | CategorySimple Category
+    | PackageSimple Package
+    | TempDirSimple Package
+    | LogFileSimple Package
+    deriving (Show, Eq, Ord)
+
+toSimpleKey :: WatcherKey l -> SimpleKey
+toSimpleKey RootKey = RootSimple
+toSimpleKey (CategoryKey c) = CategorySimple c
+toSimpleKey (PackageKey p) = PackageSimple p
+toSimpleKey (TempDirKey p) = TempDirSimple p
+toSimpleKey (LogFileKey p) = LogFileSimple p
+
 -- | A function to fire an Event and a filter to decide which events get fired
 type WatchMap = HashMap Inotify.Watch
     ( MyEvent -> IO ()
