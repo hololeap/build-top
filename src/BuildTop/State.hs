@@ -24,6 +24,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
+import Data.These
 import Reflex
 import System.Directory
 import System.FilePath
@@ -229,8 +230,11 @@ initWatcher proxy filtIn i p = do
     -- NOTE: This may create duplicate events if the 'Inotify.Watch' also
     -- catches the interesting content. This must be handled by the
     -- state-modifying code.
-
-
+    when (watcherType proxy == WatchDirectory) $ liftIO $ do
+        let (_, checkFile) = layerFilter proxy filtIn
+        fs <- lenientListDirectory p
+        es <- witherM checkFile fs
+        mapM_ eIO (That <$> es)
 
     pure (w, e, eIO)
 
