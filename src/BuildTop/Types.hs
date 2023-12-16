@@ -113,22 +113,39 @@ class IsWatcher (l :: WatchLayer) where
         => Watcher l t a -> [a]
     getWatchers w = getWatcher w : foldMap getWatchers (getChildren w)
 
+    lookupWatcher
+        :: WatcherKey l
+        -> Watcher 'RootLayer t a
+        -> Maybe (Watcher l t a)
+
 instance IsWatcher 'RootLayer where
     getWatcher = rootWatcher_Data
+    lookupWatcher _ w0 = Just w0
 
 instance IsWatcher 'CategoryLayer where
     getWatcher = categoryWatcher_Data
+    lookupWatcher (CategoryKey c) w0 =
+        M.lookup c (rootWatcher_Children w0)
 
 instance IsWatcher 'PackageLayer where
     getWatcher = packageWatcher_Data
+    lookupWatcher (PackageKey p) w0 = do
+        w <- lookupWatcher (CategoryKey (getCategory p)) w0
+        snd <$> M.lookup p (categoryWatcher_Children w)
 
 instance IsWatcher 'TempDirLayer where
     getWatcher = tempDirWatcher_Data
+    lookupWatcher (TempDirKey p) w0 = do
+        w <- lookupWatcher (PackageKey p) w0
+        packageWatcher_Children w
 
 instance IsWatcher 'LogFileLayer where
     watcherType _ = WatchFile
     getWatcher = logFileWatcher_Data
     getWatchers = (:[]) . getWatcher
+    lookupWatcher (LogFileKey p) w0 = do
+        w <- lookupWatcher (TempDirKey p) w0
+        tempDirWatcher_Children w
 
 data WatcherData t = WatcherData
     { getWatch :: Inotify.Watch
@@ -164,6 +181,18 @@ data Watcher (l :: WatchLayer) t a where
 deriving instance Functor (Watcher l t)
 deriving instance Foldable (Watcher l t)
 deriving instance Traversable (Watcher l t)
+
+-- | Used to lookup a particular part of a Watcher tree
+data WatcherKey (l :: WatchLayer) where
+    RootKey :: WatcherKey 'RootLayer
+    CategoryKey :: Category -> WatcherKey 'CategoryLayer
+    PackageKey :: Package -> WatcherKey 'PackageLayer
+    TempDirKey :: Package -> WatcherKey 'TempDirLayer
+    LogFileKey :: Package -> WatcherKey 'LogFileLayer
+
+deriving instance Show (WatcherKey l)
+deriving instance Eq (WatcherKey l)
+deriving instance Ord (WatcherKey l)
 
 -- | A function to fire an Event and a filter to decide which events get fired
 type WatchMap = HashMap Inotify.Watch
