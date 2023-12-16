@@ -4,12 +4,13 @@
 {-# Language FlexibleContexts #-}
 {-# Language FlexibleInstances #-}
 {-# Language GADTs #-}
+{-# Language RankNTypes #-}
 {-# Language StandaloneDeriving #-}
 {-# Language TypeFamilies #-}
 
 module BuildTop.Types where
 
-import Control.Monad.IO.Class
+import Control.Monad
 import Data.Function
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
@@ -17,6 +18,7 @@ import Data.Kind
 import Data.These
 import qualified System.Linux.Inotify as Inotify
 import Reflex
+import Witherable
 
 import Distribution.Portage.Types
 
@@ -43,9 +45,14 @@ class HasChildren (l :: WatchLayer) where
     type ChildContainerKey l :: Type
     type ChildLayer l :: WatchLayer
     getChildren :: Watcher l t a -> ChildContainer l (Watcher (ChildLayer l) t a)
-    deleteChild :: MonadIO m
-        => (a -> m ()) -- ^ cleanup function to run on data
-        -> ChildContainerKey l
+
+    -- | Filter a @Watcher@'s children using a predicate.
+    --
+    --   This will never delete the root.
+    filterWatcher :: Monad m
+        => (forall x. (IsWatcher x, Eq (Watcher x t a))
+                => Watcher x t a -> m Bool
+           )
         -> Watcher l t a
         -> m (Watcher l t a)
 
@@ -54,13 +61,10 @@ instance HasChildren 'RootLayer where
     type ChildContainerKey 'RootLayer = Category
     type ChildLayer 'RootLayer = 'CategoryLayer
     getChildren = rootWatcher_Children
-    deleteChild f k w0 = do
-        c <- M.alterF go k (rootWatcher_Children w0)
-        pure w0 { rootWatcher_Children = c }
-      where
-        go = deleteHelper f $ \w -> do
-            let ps = M.keys $ snd <$> categoryWatcher_Children w
-            mapM_ (\p -> deleteChild f p w) ps
+
+    filterWatcher f (RootWatcher cs0 p d) = do
+        cs <- filterA (f <=< filterWatcher f) cs0
+        pure $ RootWatcher cs p d
 
 instance HasChildren 'CategoryLayer where
     type ChildContainer 'CategoryLayer = HashMap Package
@@ -68,36 +72,29 @@ instance HasChildren 'CategoryLayer where
     type ChildLayer 'CategoryLayer = 'PackageLayer
     getChildren = fmap snd . categoryWatcher_Children
 
-    deleteChild f k w0 = do
-        let go = deleteHelper f (deleteChild f ()) . fmap snd
-        c <- M.alterF go k (categoryWatcher_Children w0)
-        pure w0 { categoryWatcher_Children = c }
+    filterWatcher f (CategoryWatcher cs0 c d) = do
+        cs <- filterA (f <=< filterWatcher f . snd) cs0
+        pure $ CategoryWatcher cs c d
 
 instance HasChildren 'PackageLayer where
     type ChildContainer 'PackageLayer = Maybe
     type ChildContainerKey 'PackageLayer = ()
     type ChildLayer 'PackageLayer = 'TempDirLayer
     getChildren = packageWatcher_Children
-    deleteChild f _ w0 = do
-        c <- deleteHelper f (deleteChild f ()) (getChildren w0)
-        pure w0 { packageWatcher_Children = c }
+
+    filterWatcher f (PackageWatcher cs0 p d) = do
+        cs <- filterA (f <=< filterWatcher f) cs0
+        pure $ PackageWatcher cs p d
 
 instance HasChildren 'TempDirLayer where
     type ChildContainer 'TempDirLayer = Maybe
     type ChildContainerKey 'TempDirLayer = ()
     type ChildLayer 'TempDirLayer = 'LogFileLayer
     getChildren = tempDirWatcher_Children
-    deleteChild f _ w0 = do
-        c <- deleteHelper f (\_ -> pure ()) (getChildren w0)
-        pure w0 { tempDirWatcher_Children = c }
 
-deleteHelper :: (IsWatcher l, Monad m)
-    => (a -> m ())
-    -> (Watcher l t a -> m b)
-    -> (Maybe (Watcher l t a))
-    -> m (Maybe c)
-deleteHelper f1 f2 m = Nothing <$ mapM_ go m
-    where go w = f1 (getWatcher w) *> f2 w
+    filterWatcher f (TempDirWatcher cs0 p d) = do
+        cs <- filterA f cs0
+        pure $ TempDirWatcher cs p d
 
 class IsWatcher (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
