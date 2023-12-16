@@ -2,6 +2,7 @@
 {-# Language DefaultSignatures #-}
 {-# Language DeriveTraversable #-}
 {-# Language FlexibleContexts #-}
+{-# Language FlexibleInstances #-}
 {-# Language GADTs #-}
 {-# Language StandaloneDeriving #-}
 {-# Language TypeFamilies #-}
@@ -9,6 +10,7 @@
 module BuildTop.Types where
 
 import Control.Monad.IO.Class
+import Data.Function
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
 import Data.Kind
@@ -174,13 +176,28 @@ data Watcher (l :: WatchLayer) t a where
         , tempDirWatcher_Data :: a
         } -> Watcher 'TempDirLayer t a
     LogFileWatcher ::
-        { logFileWatcherWatcher_Package :: Package
+        { logFileWatcher_Package :: Package
         , logFileWatcher_Data :: a
         } -> Watcher 'LogFileLayer t a
 
 deriving instance Functor (Watcher l t)
 deriving instance Foldable (Watcher l t)
 deriving instance Traversable (Watcher l t)
+
+instance Eq (Watcher 'RootLayer t a) where
+    (==) = (==) `on` rootWatcher_Path
+
+instance Eq (Watcher 'CategoryLayer t a) where
+    (==) = (==) `on` categoryWatcher_Category
+
+instance Eq (Watcher 'PackageLayer t a) where
+    (==) = (==) `on` packageWatcher_Package
+
+instance Eq (Watcher 'TempDirLayer t a) where
+    (==) = (==) `on` tempDirWatcher_Package
+
+instance Eq (Watcher 'LogFileLayer t a) where
+    (==) = (==) `on` logFileWatcher_Package
 
 -- | Used to lookup a particular part of a Watcher tree
 data WatcherKey (l :: WatchLayer) where
