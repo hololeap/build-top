@@ -120,26 +120,32 @@ class IsWatcher (l :: WatchLayer) where
         -> Watcher 'RootLayer t a
         -> Maybe (Watcher l t a)
 
+    watcherKey :: Watcher l t a -> WatcherKey l
+
 instance IsWatcher 'RootLayer where
     getWatcher = rootWatcher_Data
     lookupWatcher _ w0 = Just w0
+    watcherKey _ = RootKey
 
 instance IsWatcher 'CategoryLayer where
     getWatcher = categoryWatcher_Data
     lookupWatcher (CategoryKey c) w0 =
         M.lookup c (rootWatcher_Children w0)
+    watcherKey = CategoryKey . categoryWatcher_Category
 
 instance IsWatcher 'PackageLayer where
     getWatcher = packageWatcher_Data
     lookupWatcher (PackageKey p) w0 = do
         w <- lookupWatcher (CategoryKey (getCategory p)) w0
         snd <$> M.lookup p (categoryWatcher_Children w)
+    watcherKey = PackageKey . packageWatcher_Package
 
 instance IsWatcher 'TempDirLayer where
     getWatcher = tempDirWatcher_Data
     lookupWatcher (TempDirKey p) w0 = do
         w <- lookupWatcher (PackageKey p) w0
         packageWatcher_Children w
+    watcherKey = TempDirKey . tempDirWatcher_Package
 
 instance IsWatcher 'LogFileLayer where
     watcherType _ = WatchFile
@@ -148,6 +154,7 @@ instance IsWatcher 'LogFileLayer where
     lookupWatcher (LogFileKey p) w0 = do
         w <- lookupWatcher (TempDirKey p) w0
         tempDirWatcher_Children w
+    watcherKey = LogFileKey . logFileWatcher_Package
 
 data WatcherData t = WatcherData
     { getWatch :: Inotify.Watch
