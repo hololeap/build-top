@@ -14,14 +14,11 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Maybe
-import Data.Either (partitionEithers)
 import Data.Hashable
 import qualified Data.HashMap.Strict as M
 import Data.HashMap.Strict (HashMap)
-import Data.Kind
-import Data.Maybe (listToMaybe, isJust)
+import Data.Maybe (isJust)
 import Data.Proxy
-import Data.Set (Set)
 import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -49,76 +46,6 @@ type WatchMap = HashMap Inotify.Watch
 
 type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
 
--- | A class for layers that have a directory that needs to be scanned to find
---   relevant children.
-class HasDirectory (l :: WatchLayer) where
-    type ScanInput l :: Type
-    type ScanInput l = ()
-    type ScanData l :: Type
-    processDir
-        :: MonadIO m
-        => Proxy l
-        -> ScanInput l
-        -> [FilePath] -- ^ real path, not just the base name
-        -> m (ScanData l)
-
--- | Scan a directory given a layer with a @HasDirectory@ instance, its
---   input, and a path to the given directory. Sends the full path of the file
---   to @processDir@.
-scanDirectory
-    :: (HasDirectory l, MonadIO m)
-    => Proxy l
-    -> ScanInput l
-    -> FilePath -- ^ Directory to scan
-    -> m (ScanData l)
-scanDirectory proxy i p0 = do
-    fs <- lenientListDirectory p0
-    processDir proxy i (map (p0 </>) fs)
-
-instance HasDirectory 'RootLayer where
-    type ScanData 'RootLayer = [Category]
-    processDir _ _ = witherM $ \f -> runMaybeT $ do
-        c <- liftMaybe $ parseMaybe $ takeFileName f
-        liftIO (doesDirectoryExist f) >>= guard
-        pure c
-
--- | Scan a list of FilePaths, sorting them into a set of lockfiles and a
---   list of packages (directories).
-instance HasDirectory 'CategoryLayer where
-    type ScanInput 'CategoryLayer = Category
-    type ScanData 'CategoryLayer = (Set Package, [Package])
-    processDir _ c fs = do
-        let checkLockFile f = do
-                p <- liftMaybe $ lockFilePackage c $ takeFileName f
-                liftIO (doesFileExist f) >>= guard
-                pure p
-            checkPkgDir f = do
-                p <- liftMaybe $ parseMaybe $ toString c </> takeFileName f
-                liftIO (doesDirectoryExist f) >>= guard
-                pure p
-            identifyPath f = runMaybeT $
-                    Left <$> checkLockFile f
-                <|> Right <$> checkPkgDir f
-        (lockPs, pkgPs) <- partitionEithers <$> witherM identifyPath fs
-        pure (S.fromList lockPs, pkgPs)
-
-instance HasDirectory 'PackageLayer where
-    type ScanData 'PackageLayer = Maybe FilePath
-    processDir _ _ =
-        let go = witherM $ \f -> runMaybeT $ do
-                guard (takeFileName f == "temp")
-                liftIO (doesDirectoryExist f) >>= guard
-                pure f
-        in fmap listToMaybe . go
-
-instance HasDirectory 'TempDirLayer where
-    type ScanData 'TempDirLayer = Maybe FilePath
-    processDir _ _ =
-        let go = witherM $ \f -> runMaybeT $ do
-                guard (takeFileName f == "build.log")
-                liftIO (doesFileExist f) >>= guard
-                pure f
-        in fmap listToMaybe . go
 
 -- | Scan the portage temp directory, building the current @BuildTopState@.
 --   Will return @Nothing@ if the portage temp directory does not exist.
