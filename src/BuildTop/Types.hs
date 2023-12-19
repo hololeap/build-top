@@ -246,14 +246,6 @@ toSimpleKey (PackageKey p) = PackageSimple p
 toSimpleKey (TempDirKey p) = TempDirSimple p
 toSimpleKey (LogFileKey p) = LogFileSimple p
 
--- | A function to fire an Event and a filter to decide which events get fired
-type WatchMap = HashMap Inotify.Watch
-    ( MyEvent -> IO ()
-    , Inotify.Event -> Maybe BuildTopEvent
-    )
-
-type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
-
 data EventType
     = AddEvent
     | RemoveEvent

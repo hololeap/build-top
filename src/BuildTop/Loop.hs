@@ -9,8 +9,7 @@ import Data.IORef
 import Data.These
 import qualified System.Linux.Inotify as Inotify
 
-import BuildTop.Types
-
+import BuildTop.State
 
 eventLoop :: MonadIO m
     => Inotify.Inotify

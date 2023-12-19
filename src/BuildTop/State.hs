@@ -17,6 +17,7 @@ import Control.Monad.Trans.Maybe
 import Data.Either (partitionEithers)
 import Data.Hashable
 import qualified Data.HashMap.Strict as M
+import Data.HashMap.Strict (HashMap)
 import Data.Kind
 import Data.Maybe (listToMaybe)
 import Data.Proxy
@@ -39,6 +40,14 @@ import BuildTop.Types
 import BuildTop.Util
 
 import Debug.Pretty.Simple
+
+-- | A function to fire an Event and a filter to decide which events get fired
+type WatchMap = HashMap Inotify.Watch
+    ( MyEvent -> IO ()
+    , Inotify.Event -> Maybe BuildTopEvent
+    )
+
+type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
 
 -- | A class for layers that have a directory that needs to be scanned to find
 --   relevant children.
