@@ -19,7 +19,7 @@ import Data.Hashable
 import qualified Data.HashMap.Strict as M
 import Data.HashMap.Strict (HashMap)
 import Data.Kind
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, isJust)
 import Data.Proxy
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -184,7 +184,9 @@ scanState inot path0 oldState = finish $ flip runStateT M.empty $ runMaybeT $ do
 
         pure $ CategoryWatcher child1 c data1
 
-    pure $ RootWatcher child0 path0 data0
+    let rw = RootWatcher child0 path0 data0
+    cleanupOldState rw
+    pure rw
   where
     watcherHelper
         :: forall l m.
@@ -238,6 +240,22 @@ scanState inot path0 oldState = finish $ flip runStateT M.empty $ runMaybeT $ do
 
     finish :: Functor f => f (Maybe a, b) -> f (Maybe (a, b))
     finish = fmap $ \(ma, b) -> (,b) <$> ma
+
+    cleanupOldState :: forall m. MonadIO m
+        => Watcher 'RootLayer t (WatcherData t) -> m ()
+    cleanupOldState newWatcher
+        = forM_ oldState $ \(oldWatcher, _) -> do
+            filterWatcher go oldWatcher
+      where
+        go :: forall x. IsWatcher x => Watcher x t (WatcherData t) -> m Bool
+        go w = do
+            -- If the current node doesn't exist in the new tree, we run a
+            -- cleanup action.
+            unless (isJust (lookupWatcher (watcherKey w) newWatcher)) $
+                liftIO $ Inotify.rmWatch inot $ getWatch $ getWatcher w
+            -- We use filterWatcher to traverse the old tree, but nothing
+            -- actually needs to get deleted.
+            pure True
 
 initWatcher :: (IsWatcher l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
     => Proxy l
