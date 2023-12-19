@@ -194,8 +194,13 @@ data Watcher (l :: WatchLayer) t a where
         } -> Watcher 'LogFileLayer t a
 
 deriving instance Functor (Watcher l t)
-deriving instance Foldable (Watcher l t)
-deriving instance Traversable (Watcher l t)
+deriving instance IsWatcher l => Traversable (Watcher l t)
+
+-- TODO: Is this necessary or does the derived Foldable instance work as
+--       intended? Set up a test case to see if the derived Foldable matches
+--       this.
+instance IsWatcher l => Foldable (Watcher l t) where
+    foldMap f = foldMap f . getWatchers
 
 instance Eq (Watcher 'RootLayer t a) where
     (==) = (==) `on` rootWatcher_Path
