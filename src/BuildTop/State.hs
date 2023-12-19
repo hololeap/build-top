@@ -12,6 +12,7 @@ module BuildTop.State where
 import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Reader
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Maybe
 import Data.Hashable
@@ -49,12 +50,15 @@ type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
 
 -- | Scan the portage temp directory, building the current @BuildTopState@.
 --   Will return @Nothing@ if the portage temp directory does not exist.
-scanState :: forall t m0. (Reflex t, TriggerEvent t m0, MonadIO m0)
-    => Inotify.Inotify
-    -> FilePath
-    -> Maybe (BuildTopState t)
+scanState :: forall t m0.
+    ( Reflex t
+    , TriggerEvent t m0
+    , MonadIO m0
+    , MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m0
+    )
+    => FilePath
     -> m0 (Maybe (BuildTopState t))
-scanState inot path0 oldState = finish $ flip runStateT M.empty $ runMaybeT $ do
+scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
     let proxy0 = Proxy @'RootLayer
         key0 = RootKey
 
@@ -115,49 +119,6 @@ scanState inot path0 oldState = finish $ flip runStateT M.empty $ runMaybeT $ do
     cleanupOldState rw
     pure rw
   where
-    watcherHelper
-        :: forall l m.
-           ( IsWatcher l
-           , HasFilter l
-           , Reflex t
-           , TriggerEvent t m
-           , MonadIO m
-           , MonadState WatchMap m
-           )
-        => WatcherKey l
-        -> FilterInput l
-        -> FilePath
-        -> MaybeT m (WatcherData t)
-    watcherHelper key filtIn path = do
-        let proxy = Proxy @l
-            check = case watcherType proxy of
-                WatchDirectory -> doesDirectoryExist
-                WatchFile -> doesFileExist
-        liftIO (check path) >>= guard
-
-        (iWatch, rEvent, eAct) <- recycleState <|> createState proxy
-        modify $ M.insert iWatch (eAct, fst $ layerFilter proxy filtIn)
-
-        pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
-
-        pure $ WatcherData iWatch rEvent
-      where
-        recycleState
-            :: MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
-        recycleState = do
-            (oldWatcher, oldWatchMap) <- liftMaybe oldState
-            w <- liftMaybe $ lookupWatcher key oldWatcher
-            let (WatcherData iWatch rEvent) = getWatcher w
-            case M.lookup iWatch oldWatchMap of
-                Just (eAct, _) -> pure (iWatch, rEvent, eAct)
-                Nothing -> liftIO
-                    $ error "iWatch found but it's not in oldWatchMap!"
-
-        createState
-            :: Proxy l
-            -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
-        createState proxy = initWatcher proxy filtIn inot path
-
     buildMapFromKeys
         :: forall m k v. (Monad m, Hashable k)
         => [k] -> (k -> MaybeT m v) -> m (M.HashMap k v)
@@ -168,14 +129,16 @@ scanState inot path0 oldState = finish $ flip runStateT M.empty $ runMaybeT $ do
     finish :: Functor f => f (Maybe a, b) -> f (Maybe (a, b))
     finish = fmap $ \(ma, b) -> (,b) <$> ma
 
-    cleanupOldState :: forall m. MonadIO m
+    cleanupOldState :: forall m.
+        (MonadIO m, MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m)
         => Watcher 'RootLayer t (WatcherData t) -> m ()
-    cleanupOldState newWatcher
-        = forM_ oldState $ \(oldWatcher, _) -> do
-            filterWatcher go oldWatcher
+    cleanupOldState newWatcher = do
+        (_, oldState) <- ask
+        forM_ oldState $ \(oldWatcher, _) -> filterWatcher go oldWatcher
       where
         go :: forall x. IsWatcher x => Watcher x t (WatcherData t) -> m Bool
         go w = do
+            (inot, _) <- ask
             -- If the current node doesn't exist in the new tree, we run a
             -- cleanup action.
             unless (isJust (lookupWatcher (watcherKey w) newWatcher)) $
@@ -183,6 +146,55 @@ scanState inot path0 oldState = finish $ flip runStateT M.empty $ runMaybeT $ do
             -- We use filterWatcher to traverse the old tree, but nothing
             -- actually needs to get deleted.
             pure True
+
+watcherHelper
+    :: forall l t m.
+        ( IsWatcher l
+        , HasFilter l
+        , Reflex t
+        , TriggerEvent t m
+        , MonadIO m
+        , MonadState WatchMap m
+        , MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m
+        )
+    => WatcherKey l
+    -> FilterInput l
+    -> FilePath
+    -> MaybeT m (WatcherData t)
+watcherHelper key filtIn path = do
+    (_, _) <- ask
+    let proxy = Proxy @l
+        check = case watcherType proxy of
+            WatchDirectory -> doesDirectoryExist
+            WatchFile -> doesFileExist
+        filt = fst (layerFilter proxy filtIn)
+    liftIO (check path) >>= guard
+
+    (iWatch, rEvent, eAct) <- recycleState <|> createState proxy
+    modify $ M.insert iWatch (eAct, fst $ layerFilter proxy filtIn)
+
+    pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
+
+    pure $ WatcherData iWatch rEvent
+  where
+    recycleState
+        :: MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
+    recycleState = do
+        (_, oldState) <- ask
+        (oldWatcher, oldWatchMap) <- liftMaybe oldState
+        w <- liftMaybe $ lookupWatcher key oldWatcher
+        let (WatcherData iWatch rEvent) = getWatcher w
+        case M.lookup iWatch oldWatchMap of
+            Just (eAct, _) -> pure (iWatch, rEvent, eAct)
+            Nothing -> liftIO
+                $ error "iWatch found but it's not in oldWatchMap!"
+
+    createState
+        :: Proxy l
+        -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
+    createState proxy = do
+        (inot, _) <- ask
+        initWatcher proxy filtIn inot path
 
 initWatcher :: (IsWatcher l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
     => Proxy l

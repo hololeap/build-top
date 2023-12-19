@@ -6,6 +6,7 @@ module Main where
 
 import Control.Applicative
 import Control.Monad.IO.Class
+import Control.Monad.Reader
 import Control.Monad.Trans.Maybe
 import Data.Bifunctor
 import qualified Data.HashMap.Strict as M
@@ -25,7 +26,8 @@ app :: MonadHeadlessApp t m => m (Event t ())
 app = mdo
     runMaybeT $ do
         i <- liftIO $ Inotify.init
-        Just (rw, wm) <- scanState i "/var/tmp/portage" Nothing
+        Just (rw, wm) <- flip runReaderT (i, Nothing)
+            $ scanState "/var/tmp/portage"
         wmRef <- liftIO $ newIORef wm
         eventLoop i wmRef
         liftIO $ print $ M.size $ rootWatcher_Children rw

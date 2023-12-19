@@ -94,6 +94,7 @@ executable build-top
         , base >=4.14 && <4.18
         , build-top
         , linux-inotify
+        , mtl
         , pretty-simple
         , reflex
         , transformers
