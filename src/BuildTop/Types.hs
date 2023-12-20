@@ -6,6 +6,7 @@
 {-# Language GADTs #-}
 {-# Language RankNTypes #-}
 {-# Language StandaloneDeriving #-}
+{-# Language TupleSections #-}
 {-# Language TypeFamilies #-}
 
 module BuildTop.Types where
@@ -15,7 +16,6 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Maybe
 import Data.Either (partitionEithers)
-import Data.Functor.Identity
 import Data.Function
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
@@ -60,12 +60,13 @@ class HasChildren (l :: WatchLayer) where
     type ChildLayer l :: WatchLayer
     getChildren :: Watcher l t a -> ChildContainer l (Watcher (ChildLayer l) t a)
 
-    -- | Filter a @Watcher@'s children using a predicate.
+    -- | Map a @Watcher@'s children to another value. If the inner function
+    --   returns @Nothing@, the child will be deleted.
     --
     --   This will never delete the root.
-    filterWatcher :: Monad m
+    witherWatcher :: Monad m
         => (forall x. (IsWatcher x, Eq (Watcher x t a))
-                => Watcher x t a -> m Bool
+                => Watcher x t a -> m (Maybe (Watcher x t a))
            )
         -> Watcher l t a
         -> m (Watcher l t a)
@@ -76,8 +77,8 @@ instance HasChildren 'RootLayer where
     type ChildLayer 'RootLayer = 'CategoryLayer
     getChildren = rootWatcher_Children
 
-    filterWatcher f (RootWatcher cs0 p d) = do
-        cs <- filterA (f <=< filterWatcher f) cs0
+    witherWatcher f (RootWatcher cs0 p d) = do
+        cs <- witherM (f <=< witherWatcher f) cs0
         pure $ RootWatcher cs p d
 
 instance HasChildren 'CategoryLayer where
@@ -86,8 +87,13 @@ instance HasChildren 'CategoryLayer where
     type ChildLayer 'CategoryLayer = 'PackageLayer
     getChildren = fmap snd . categoryWatcher_Children
 
-    filterWatcher f (CategoryWatcher cs0 c d) = do
-        cs <- filterA (f <=< filterWatcher f . snd) cs0
+    witherWatcher f (CategoryWatcher cs0 c d) = do
+        cs <- witherM
+            (\(lfe, cs) -> do
+                cs' <- f =<< witherWatcher f cs
+                pure $ (lfe,) <$> cs'
+            )
+            cs0
         pure $ CategoryWatcher cs c d
 
 instance HasChildren 'PackageLayer where
@@ -96,8 +102,8 @@ instance HasChildren 'PackageLayer where
     type ChildLayer 'PackageLayer = 'TempDirLayer
     getChildren = packageWatcher_Children
 
-    filterWatcher f (PackageWatcher cs0 p d) = do
-        cs <- filterA (f <=< filterWatcher f) cs0
+    witherWatcher f (PackageWatcher cs0 p d) = do
+        cs <- witherM (f <=< witherWatcher f) cs0
         pure $ PackageWatcher cs p d
 
 instance HasChildren 'TempDirLayer where
@@ -106,17 +112,9 @@ instance HasChildren 'TempDirLayer where
     type ChildLayer 'TempDirLayer = 'LogFileLayer
     getChildren = tempDirWatcher_Children
 
-    filterWatcher f (TempDirWatcher cs0 p d) = do
-        cs <- filterA f cs0
+    witherWatcher f (TempDirWatcher cs0 p d) = do
+        cs <- witherM f cs0
         pure $ TempDirWatcher cs p d
-
--- | Delete a child specified by a @SimpleKey@. This will never delete
---   the root.
-deleteChild :: HasChildren l => SimpleKey -> Watcher l t a -> Watcher l t a
-deleteChild key = runIdentity . filterWatcher go
-  where
-    go :: IsWatcher x => Watcher x t a -> Identity Bool
-    go w = Identity $ key /= toSimpleKey (watcherKey w)
 
 class IsWatcher (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
