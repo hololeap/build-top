@@ -1,6 +1,8 @@
 {-# Language DataKinds #-}
 {-# Language FlexibleContexts #-}
 {-# Language KindSignatures #-}
+{-# Language GADTs #-}
+{-# Language RankNTypes #-}
 {-# Language RecursiveDo #-}
 {-# Language ScopedTypeVariables #-}
 {-# Language TupleSections #-}
@@ -40,13 +42,37 @@ import BuildTop.Util
 import Debug.Pretty.Simple
 
 -- | A function to fire an Event and a filter to decide which events get fired
-type WatchMap = HashMap Inotify.Watch
-    ( MyEvent -> IO ()
-    , Inotify.Event -> Maybe BuildTopEvent
-    )
+type WatchMap = HashMap Inotify.Watch WatchMapData
 
 type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
 
+-- | A GADT which holds all the data needed whenever a @Inotify.Event@ fires.
+--   This hides the 'WatchLayer' type-level information which is carried by
+--   'WatcherKey' and 'FilterInput'.
+data WatchMapData where
+    WatchMapData :: (IsWatcher l, HasFilter l)
+        => (MyEvent -> IO ())
+        -> (Inotify.Event -> Maybe BuildTopEvent)
+        -> WatcherKey l
+        -> FilterInput l
+        -> FilePath
+        -> WatchMapData
+
+-- | Run a function using 'WatchMapData'. The function /must not/ return
+--   anything that mentions the inner @l@ type.
+withWatchMapData
+    :: WatchMapData
+    -> ( forall l. (IsWatcher l, HasFilter l)
+         => (MyEvent -> IO ())
+         -> (Inotify.Event -> Maybe BuildTopEvent)
+         -> WatcherKey l
+         -> FilterInput l
+         -> FilePath
+         -> r
+       )
+    -> r
+withWatchMapData (WatchMapData eAct filt key input path) f
+    = f eAct filt key input path
 
 -- | Scan the portage temp directory, building the current @BuildTopState@.
 --   Will return @Nothing@ if the portage temp directory does not exist.
@@ -162,7 +188,6 @@ watcherHelper
     -> FilePath
     -> MaybeT m (WatcherData t)
 watcherHelper key filtIn path = do
-    (_, _) <- ask
     let proxy = Proxy @l
         check = case watcherType proxy of
             WatchDirectory -> doesDirectoryExist
@@ -171,7 +196,8 @@ watcherHelper key filtIn path = do
     liftIO (check path) >>= guard
 
     (iWatch, rEvent, eAct) <- recycleState <|> createState proxy
-    modify $ M.insert iWatch (eAct, fst $ layerFilter proxy filtIn)
+    let mapData = WatchMapData eAct filt key filtIn path
+    modify $ M.insert iWatch mapData
 
     pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
 
@@ -185,7 +211,8 @@ watcherHelper key filtIn path = do
         w <- liftMaybe $ lookupWatcher key oldWatcher
         let (WatcherData iWatch rEvent) = getWatcher w
         case M.lookup iWatch oldWatchMap of
-            Just (eAct, _) -> pure (iWatch, rEvent, eAct)
+            Just (WatchMapData eAct _ _ _ _) ->
+                pure (iWatch, rEvent, eAct)
             Nothing -> liftIO
                 $ error "iWatch found but it's not in oldWatchMap!"
 
