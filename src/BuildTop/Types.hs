@@ -64,12 +64,40 @@ class HasChildren (l :: WatchLayer) where
     --   returns @Nothing@, the child will be deleted.
     --
     --   This will never delete the root.
+    --
+    --   (Inspired by @witherM@ from the @witherable@ package)
     witherWatcher :: Monad m
         => (forall x. (IsWatcher x, Eq (Watcher x t a))
                 => Watcher x t a -> m (Maybe (Watcher x t a))
            )
         -> Watcher l t a
         -> m (Watcher l t a)
+
+    -- | Insert a watcher given the 'InsertPayload'
+    insertWatcher
+        :: InsertPayload t a
+        -> Watcher l t a
+        -> Watcher l t a
+
+    -- | Update lock file state for a given package
+    updateLockFile
+        :: WatcherKey 'PackageLayer
+        -> LockFileExists
+        -> Watcher l t a
+        -> Watcher l t a
+
+    updateLockFile _ _ = id -- Overridden by root and category layers
+
+-- | Holds a 'WatcherKey' (signifying the parent) and a child 'Watcher'.
+--
+--   Hides 'WatchLayer' information from top-level. This allows for passing
+--   the data down through the tree in a uniform way.
+data InsertPayload t a where
+    InsertPayload
+        :: HasChildren l
+        => WatcherKey l
+        -> Watcher (ChildLayer l) t a
+        -> InsertPayload t a
 
 instance HasChildren 'RootLayer where
     type ChildContainer 'RootLayer = HashMap Category
@@ -80,6 +108,25 @@ instance HasChildren 'RootLayer where
     witherWatcher f (RootWatcher cs0 p d) = do
         cs <- witherM (f <=< witherWatcher f) cs0
         pure $ RootWatcher cs p d
+
+    insertWatcher ip (RootWatcher cs p d) =
+        let cs' = case ip of
+                InsertPayload RootKey c@(CategoryWatcher _ cat _)
+                    -> M.insert cat c cs
+                InsertPayload (CategoryKey cat) _
+                    -> sendDownstream cat
+                InsertPayload (PackageKey pkg) _
+                    -> sendDownstream (getCategory pkg)
+                InsertPayload (TempDirKey pkg) _
+                    -> sendDownstream (getCategory pkg)
+                _ -> cs
+        in RootWatcher cs' p d
+      where
+        sendDownstream cat = M.adjust (insertWatcher ip) cat cs
+
+    updateLockFile key@(PackageKey pkg) lfe (RootWatcher cs fp d) =
+        let cs' = M.adjust (updateLockFile key lfe) (getCategory pkg) cs
+        in RootWatcher cs' fp d
 
 instance HasChildren 'CategoryLayer where
     type ChildContainer 'CategoryLayer = HashMap Package
@@ -96,6 +143,24 @@ instance HasChildren 'CategoryLayer where
             cs0
         pure $ CategoryWatcher cs c d
 
+    insertWatcher ip (CategoryWatcher cs cat d) =
+        let cs' = case ip of
+                InsertPayload (CategoryKey _) c@(PackageWatcher _ p _)
+                    -> M.insert p (False, c) cs
+                InsertPayload (PackageKey pkg) _
+                    -> sendDownstream pkg
+                InsertPayload (TempDirKey pkg) _
+                    -> sendDownstream pkg
+                _ -> cs
+        in CategoryWatcher cs' cat d
+      where
+        sendDownstream pkg =
+            M.adjust (\(b,w) -> (b, insertWatcher ip w)) pkg cs
+
+    updateLockFile (PackageKey pkg) lfe (CategoryWatcher cs cat d) =
+        let cs' = M.adjust (\(_,w) -> (lfe, w)) pkg cs
+        in CategoryWatcher cs' cat d
+
 instance HasChildren 'PackageLayer where
     type ChildContainer 'PackageLayer = Maybe
     type ChildContainerKey 'PackageLayer = ()
@@ -106,6 +171,15 @@ instance HasChildren 'PackageLayer where
         cs <- witherM (f <=< witherWatcher f) cs0
         pure $ PackageWatcher cs p d
 
+    insertWatcher ip (PackageWatcher cs p d) =
+        let cs' = case ip of
+                InsertPayload (PackageKey _) c
+                    -> Just c
+                InsertPayload (TempDirKey _) _
+                    -> insertWatcher ip <$> cs
+                _ -> cs
+        in PackageWatcher cs' p d
+
 instance HasChildren 'TempDirLayer where
     type ChildContainer 'TempDirLayer = Maybe
     type ChildContainerKey 'TempDirLayer = ()
@@ -115,6 +189,12 @@ instance HasChildren 'TempDirLayer where
     witherWatcher f (TempDirWatcher cs0 p d) = do
         cs <- witherM f cs0
         pure $ TempDirWatcher cs p d
+
+    insertWatcher ip (TempDirWatcher cs p d) =
+        let cs' = case ip of
+                InsertPayload (TempDirKey _) c -> Just c
+                _ -> cs
+        in TempDirWatcher cs' p d
 
 class IsWatcher (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
