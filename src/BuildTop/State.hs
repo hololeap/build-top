@@ -160,20 +160,20 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
         => Watcher 'RootLayer t (WatcherData t) -> m ()
     cleanupOldState newWatcher = do
         (_, oldState) <- ask
-        forM_ oldState $ \(oldWatcher, _) -> witherWatcher go oldWatcher
+        forM_ oldState $ \(oldWatcher, _) -> updateAllWatcher go oldWatcher
       where
         go :: forall x. IsWatcher x
             => Watcher x t (WatcherData t)
-            -> m (Maybe (Watcher x t (WatcherData t)))
+            -> m (Watcher x t (WatcherData t))
         go w = do
             (inot, _) <- ask
             -- If the current node doesn't exist in the new tree, we run a
             -- cleanup action.
             unless (isJust (lookupWatcher (watcherKey w) newWatcher)) $
                 liftIO $ Inotify.rmWatch inot $ getWatch $ getWatcher w
-            -- We use witherWatcher to traverse the old tree, but nothing
-            -- actually needs to get deleted.
-            pure $ Just w
+            -- We use updateAllWatcher to traverse the old tree, but nothing
+            -- actually needs to get modified.
+            pure w
 
 watcherHelper
     :: forall l t m.

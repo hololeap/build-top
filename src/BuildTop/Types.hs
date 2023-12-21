@@ -3,6 +3,7 @@
 {-# Language DeriveTraversable #-}
 {-# Language FlexibleContexts #-}
 {-# Language FlexibleInstances #-}
+{-# Language LambdaCase #-}
 {-# Language GADTs #-}
 {-# Language RankNTypes #-}
 {-# Language StandaloneDeriving #-}
@@ -11,16 +12,17 @@
 
 module BuildTop.Types where
 
-import Control.Applicative ((<|>))
+import Control.Applicative ((<|>), empty)
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Maybe
 import Data.Either (partitionEithers)
 import Data.Function
+import Data.Functor.Identity
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
 import Data.Kind
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, fromMaybe)
 import Data.Proxy
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -73,31 +75,112 @@ class HasChildren (l :: WatchLayer) where
         -> Watcher l t a
         -> m (Watcher l t a)
 
-    -- | Insert a watcher given the 'InsertPayload'
-    insertWatcher
-        :: InsertPayload t a
+    -- | Very generic way to alter a specific part of the watcher tree. This
+    --   is able to insert, delete, or update.
+    --
+    --   See 'AlterPayload' for more information on how to use it.
+    alterWatcher
+        :: Monad m
+        => AlterPayload t m a
         -> Watcher l t a
-        -> Watcher l t a
+        -> m (Watcher l t a)
 
-    -- | Update lock file state for a given package
-    updateLockFile
-        :: WatcherKey 'PackageLayer
-        -> LockFileExists
-        -> Watcher l t a
-        -> Watcher l t a
+-- | Insert a child for the given parent
+--
+--   See 'InsertPayload' for more information on how to use it.
+insertWatcher
+    :: HasChildren l
+    => InsertPayload t a
+    -> Watcher l t a
+    -> Watcher l t a
+insertWatcher (InsertPayload key child) =
+    let f = case key of
+                RootKey -> \(RootWatcher cs fp d) ->
+                    -- We need to index the child by its 'Category'
+                    let CategoryWatcher _ cat _ = child
+                    in RootWatcher (M.insert cat child cs) fp d
+                CategoryKey _ -> \(CategoryWatcher cs cat d) ->
+                    -- We need to index the child by its 'Package'
+                    let PackageWatcher _ pkg _ = child
+                    in CategoryWatcher (M.insert pkg (False, child) cs) cat d
+                PackageKey _ -> \(PackageWatcher _ pkg d) ->
+                    PackageWatcher (Just child) pkg d
+                TempDirKey _ -> \(TempDirWatcher _ pkg d) ->
+                    TempDirWatcher (Just child) pkg d
+                LogFileKey _ ->
+                    -- log-file level does not have any children
+                    error "LogFileKey should not be used with insertWatcher"
 
-    updateLockFile _ _ = id -- Overridden by root and category layers
+    in runIdentity
+        . alterWatcher
+            (AlterPayload key (pure . fmap f))
 
--- | Holds a 'WatcherKey' (signifying the parent) and a child 'Watcher'.
+-- | Delete a watcher at the given location
+--
+--   See 'DeletePayload' for more information on how to use it.
+deleteWatcher
+    :: HasChildren l
+    => DeletePayload
+    -> Watcher l t a
+    -> Watcher l t a
+deleteWatcher (DeletePayload key) =
+              -- delete the watcher with the matching key
+    let f w | watcherKey w == key = empty
+            | otherwise = pure w
+    in runIdentity
+        . alterWatcher
+            (AlterPayload key (runMaybeT . (f <=< liftMaybe)))
+
+-- | Update the state of the lock file for a given package.
+updateLockFile
+    :: HasChildren l
+    => LockFileExists
+    -> Package
+    -> Watcher l t a
+    -> Watcher l t a
+updateLockFile lfe pkg =
+    let cat = getCategory pkg
+    in runIdentity
+        . alterWatcher
+            (AlterPayload (CategoryKey cat) (pure . fmap f))
+  where
+    f (CategoryWatcher cs c d) =
+        let adj (_,w) = (lfe,w)
+        in CategoryWatcher (M.adjust adj pkg cs) c d
+
+-- | Holds a 'WatcherKey' (used to find the Watcher) and a function to update
+--   it. Used by 'alterWatcher'.
+--
+--   There are a few things to note:
+--
+--   * 'alterWatcher' behaves differently on the 'RootLayer' than on the other
+--     layers. If the root watcher were to be deleted, it will instead be
+--     returned without any modification.
+--   * The input given to the inner function will be @Just watcher@ if the
+--     watcher specified by the key exists. Otherwise the input will be
+--     @Nothing@.
+--   * If the inner function's /output/ is @Nothing@, the matching watcher
+--     will be deleted (except for 'RootWatcher' which will remain unchanged).
 --
 --   Hides 'WatchLayer' information from top-level. This allows for passing
 --   the data down through the tree in a uniform way.
+data AlterPayload t m a where
+    AlterPayload
+        :: WatcherKey l
+        -> (Maybe (Watcher l t a) -> m (Maybe (Watcher l t a)))
+        -> AlterPayload t m a
+
+-- | Holds the key of the parent and the new child. Used by 'insertWatcher'.
 data InsertPayload t a where
     InsertPayload
         :: HasChildren l
         => WatcherKey l
         -> Watcher (ChildLayer l) t a
         -> InsertPayload t a
+
+-- | Holds the key of the watcher to be deleted. Used by 'deleteWatcher'
+data DeletePayload where
+    DeletePayload :: IsWatcher l => WatcherKey l -> DeletePayload
 
 instance HasChildren 'RootLayer where
     type ChildContainer 'RootLayer = HashMap Category
@@ -109,24 +192,29 @@ instance HasChildren 'RootLayer where
         cs <- witherM (f <=< witherWatcher f) cs0
         pure $ RootWatcher cs p d
 
-    insertWatcher ip (RootWatcher cs p d) =
-        let cs' = case ip of
-                InsertPayload RootKey c@(CategoryWatcher _ cat _)
-                    -> M.insert cat c cs
-                InsertPayload (CategoryKey cat) _
-                    -> sendDownstream cat
-                InsertPayload (PackageKey pkg) _
-                    -> sendDownstream (getCategory pkg)
-                InsertPayload (TempDirKey pkg) _
-                    -> sendDownstream (getCategory pkg)
-                _ -> cs
-        in RootWatcher cs' p d
+    alterWatcher (AlterPayload RootKey f) w = do
+        -- Special case: Normally we may delete the node, but here we may only
+        -- modify it or return the original.
+        -- Only really useful for inserting new categories.
+        mw <- f (Just w)
+        pure $ fromMaybe w mw
+    alterWatcher up (RootWatcher cs fp d) = do
+        cs' <- case up of
+            AlterPayload (CategoryKey cat) f
+                -> M.alterF f cat cs
+            AlterPayload (PackageKey pkg) _
+                -> sendDownstream (getCategory pkg)
+            AlterPayload (TempDirKey pkg) _
+                -> sendDownstream (getCategory pkg)
+            AlterPayload (LogFileKey pkg) _
+                -> sendDownstream (getCategory pkg)
+        pure $ RootWatcher cs' fp d
       where
-        sendDownstream cat = M.adjust (insertWatcher ip) cat cs
-
-    updateLockFile key@(PackageKey pkg) lfe (RootWatcher cs fp d) =
-        let cs' = M.adjust (updateLockFile key lfe) (getCategory pkg) cs
-        in RootWatcher cs' fp d
+        sendDownstream cat =
+            M.alterF
+                (maybe (pure Nothing) (fmap Just . alterWatcher up))
+                cat
+                cs
 
 instance HasChildren 'CategoryLayer where
     type ChildContainer 'CategoryLayer = HashMap Package
@@ -143,23 +231,19 @@ instance HasChildren 'CategoryLayer where
             cs0
         pure $ CategoryWatcher cs c d
 
-    insertWatcher ip (CategoryWatcher cs cat d) =
-        let cs' = case ip of
-                InsertPayload (CategoryKey _) c@(PackageWatcher _ p _)
-                    -> M.insert p (False, c) cs
-                InsertPayload (PackageKey pkg) _
-                    -> sendDownstream pkg
-                InsertPayload (TempDirKey pkg) _
-                    -> sendDownstream pkg
-                _ -> cs
-        in CategoryWatcher cs' cat d
+    alterWatcher up (CategoryWatcher cs cat d) = do
+        cs' <- case up of
+            AlterPayload (PackageKey pkg) f ->
+                let alt (b,w) = (b,) <$> MaybeT (f (Just w))
+                in M.alterF (runMaybeT . (alt <=< liftMaybe)) pkg cs
+            AlterPayload (TempDirKey pkg) _ -> sendDownstream pkg
+            AlterPayload (LogFileKey pkg) _ -> sendDownstream pkg
+            _ -> pure cs
+        pure $ CategoryWatcher cs' cat d
       where
         sendDownstream pkg =
-            M.adjust (\(b,w) -> (b, insertWatcher ip w)) pkg cs
-
-    updateLockFile (PackageKey pkg) lfe (CategoryWatcher cs cat d) =
-        let cs' = M.adjust (\(_,w) -> (lfe, w)) pkg cs
-        in CategoryWatcher cs' cat d
+            let alt (b,w) = (b,) <$> lift (alterWatcher up w)
+            in M.alterF (runMaybeT . (alt <=< liftMaybe)) pkg cs
 
 instance HasChildren 'PackageLayer where
     type ChildContainer 'PackageLayer = Maybe
@@ -171,14 +255,13 @@ instance HasChildren 'PackageLayer where
         cs <- witherM (f <=< witherWatcher f) cs0
         pure $ PackageWatcher cs p d
 
-    insertWatcher ip (PackageWatcher cs p d) =
-        let cs' = case ip of
-                InsertPayload (PackageKey _) c
-                    -> Just c
-                InsertPayload (TempDirKey _) _
-                    -> insertWatcher ip <$> cs
-                _ -> cs
-        in PackageWatcher cs' p d
+    alterWatcher up (PackageWatcher cs pkg d) = do
+        cs' <- case up of
+            AlterPayload (TempDirKey _) f -> f cs
+            AlterPayload (LogFileKey _) _ ->
+                mapM (alterWatcher up) cs
+            _ -> pure cs
+        pure $ PackageWatcher cs' pkg d
 
 instance HasChildren 'TempDirLayer where
     type ChildContainer 'TempDirLayer = Maybe
@@ -190,11 +273,11 @@ instance HasChildren 'TempDirLayer where
         cs <- witherM f cs0
         pure $ TempDirWatcher cs p d
 
-    insertWatcher ip (TempDirWatcher cs p d) =
-        let cs' = case ip of
-                InsertPayload (TempDirKey _) c -> Just c
-                _ -> cs
-        in TempDirWatcher cs' p d
+    alterWatcher up (TempDirWatcher cs p d) = do
+        cs' <- case up of
+            AlterPayload (LogFileKey _) f -> f cs
+            _ -> pure cs
+        pure $ TempDirWatcher cs' p d
 
 class IsWatcher (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
@@ -219,16 +302,35 @@ class IsWatcher (l :: WatchLayer) where
 
     watcherKey :: Watcher l t a -> WatcherKey l
 
+    -- | Apply an operation on every watcher in the tree, updating each one
+    --   using the given function.
+    updateAllWatcher
+        :: Monad m
+        => (forall x. IsWatcher x => Watcher x t a -> m (Watcher x t a))
+        -> Watcher l t a
+        -> m (Watcher l t a)
+
 instance IsWatcher 'RootLayer where
     getWatcher = rootWatcher_Data
     lookupWatcher _ w0 = Just w0
     watcherKey _ = RootKey
+
+    updateAllWatcher f w = f w >>= \case -- update self first
+        RootWatcher cs fp d -> do
+            cs' <- traverse (updateAllWatcher f) cs -- update children
+            pure $ RootWatcher cs' fp d
+
 
 instance IsWatcher 'CategoryLayer where
     getWatcher = categoryWatcher_Data
     lookupWatcher (CategoryKey c) w0 =
         M.lookup c (rootWatcher_Children w0)
     watcherKey = CategoryKey . categoryWatcher_Category
+
+    updateAllWatcher f w0 = f w0 >>= \case
+        CategoryWatcher cs cat d -> do
+            cs' <- traverse (\(b,w) -> (b,) <$> f w) cs
+            pure $ CategoryWatcher cs' cat d
 
 instance IsWatcher 'PackageLayer where
     getWatcher = packageWatcher_Data
@@ -237,12 +339,22 @@ instance IsWatcher 'PackageLayer where
         snd <$> M.lookup p (categoryWatcher_Children w)
     watcherKey = PackageKey . packageWatcher_Package
 
+    updateAllWatcher f w = f w >>= \case
+        PackageWatcher cs pkg d -> do
+            cs' <- traverse f cs
+            pure $ PackageWatcher cs' pkg d
+
 instance IsWatcher 'TempDirLayer where
     getWatcher = tempDirWatcher_Data
     lookupWatcher (TempDirKey p) w0 = do
         w <- lookupWatcher (PackageKey p) w0
         packageWatcher_Children w
     watcherKey = TempDirKey . tempDirWatcher_Package
+
+    updateAllWatcher f w = f w >>= \case
+        TempDirWatcher cs cat d -> do
+            cs' <- traverse f cs
+            pure $ TempDirWatcher cs' cat d
 
 instance IsWatcher 'LogFileLayer where
     watcherType _ = WatchFile
@@ -252,6 +364,8 @@ instance IsWatcher 'LogFileLayer where
         w <- lookupWatcher (TempDirKey p) w0
         tempDirWatcher_Children w
     watcherKey = LogFileKey . logFileWatcher_Package
+
+    updateAllWatcher f w = f w -- no children
 
 data WatcherData t = WatcherData
     { getWatch :: Inotify.Watch
