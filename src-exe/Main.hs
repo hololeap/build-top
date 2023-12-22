@@ -21,6 +21,7 @@ import BuildTop.Loop
 import BuildTop.State
 import BuildTop.Types
 import BuildTop.Util
+import qualified BuildTop.Watcher as W
 
 app :: MonadHeadlessApp t m => m (Event t ())
 app = mdo
@@ -30,9 +31,9 @@ app = mdo
             $ scanState "/var/tmp/portage"
         wmRef <- liftIO $ newIORef wm
         eventLoop i wmRef
-        liftIO $ print $ M.size $ rootWatcher_Children rw
+        liftIO $ print $ M.size $ W.rootWatcher_Children rw
 --         pPrintForceColor $ "Size of getEvents: " ++ show (length (getEvents rw))
-        let e = mergeList $ map getEvent (getWatchers rw)
+        let e = mergeList $ map W.getEvent (W.toList rw)
         -- performEvent $ liftIO . (\e -> pPrintForceColor e *> pPrintForceColor (printEvent e)) <$> e
         performEvent $ liftIO . pPrintForceColor . (fmap (first (printEvent rw))) <$> e
     liftIO $ putStrLn "end of 'app'"

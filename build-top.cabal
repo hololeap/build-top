@@ -54,6 +54,7 @@ library
         , BuildTop.State
         , BuildTop.Types
         , BuildTop.Util
+        , BuildTop.Watcher
 
     -- Modules included in this library but not exported.
     -- other-modules:

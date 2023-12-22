@@ -10,6 +10,7 @@ import Witherable
 import Distribution.Portage.Types
 
 import BuildTop.Types
+import BuildTop.Watcher (Watcher(..), WatcherData(..))
 
 import Prelude hiding (filter)
 

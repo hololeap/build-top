@@ -1,13 +1,10 @@
 {-# Language DataKinds #-}
 {-# Language FlexibleContexts #-}
-{-# Language KindSignatures #-}
 {-# Language GADTs #-}
 {-# Language RankNTypes #-}
-{-# Language RecursiveDo #-}
 {-# Language ScopedTypeVariables #-}
 {-# Language TupleSections #-}
 {-# Language TypeApplications #-}
-{-# Language TypeFamilies #-}
 
 module BuildTop.State where
 
@@ -38,6 +35,8 @@ import Distribution.Portage.Types
 import BuildTop.Filters
 import BuildTop.Types
 import BuildTop.Util
+import BuildTop.Watcher (Watcher(..), WatcherData(..), BasicLayer, WatcherKey(..))
+import qualified BuildTop.Watcher as W
 
 import Debug.Pretty.Simple
 
@@ -162,7 +161,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
         => Watcher 'RootLayer t (WatcherData t) -> m ()
     cleanupOldState newWatcher = do
         (_, oldState) <- ask
-        forM_ oldState $ \(oldWatcher, _) -> updateAllWatcher go oldWatcher
+        forM_ oldState $ \(oldWatcher, _) -> W.updateAll go oldWatcher
       where
         go :: forall x. BasicLayer x
             => Watcher x t (WatcherData t)
@@ -171,8 +170,8 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
             (inot, _) <- ask
             -- If the current node doesn't exist in the new tree, we run a
             -- cleanup action.
-            unless (isJust (lookupWatcher (watcherKey w) newWatcher)) $
-                liftIO $ Inotify.rmWatch inot $ getWatch $ getWatcher w
+            unless (isJust (W.lookup (W.watcherKey w) newWatcher)) $
+                liftIO $ Inotify.rmWatch inot $ getWatch $ W.extract w
             -- We use updateAllWatcher to traverse the old tree, but nothing
             -- actually needs to get modified.
             pure w
@@ -193,7 +192,7 @@ watcherHelper
     -> MaybeT m (WatcherData t)
 watcherHelper key filtIn path = do
     let proxy = Proxy @l
-        check = case watcherType proxy of
+        check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
             WatchFile -> doesFileExist
         filt = fst (layerFilter proxy filtIn)
@@ -212,8 +211,8 @@ watcherHelper key filtIn path = do
     recycleState = do
         (_, oldState) <- ask
         (oldWatcher, oldWatchMap) <- liftMaybe oldState
-        w <- liftMaybe $ lookupWatcher key oldWatcher
-        let (WatcherData iWatch rEvent) = getWatcher w
+        w <- liftMaybe $ W.lookup key oldWatcher
+        let (WatcherData iWatch rEvent) = W.extract w
         case M.lookup iWatch oldWatchMap of
             Just (WatchMapData eAct _ _ _ _) ->
                 pure (iWatch, rEvent, eAct)
@@ -234,7 +233,7 @@ initWatcher :: (BasicLayer l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m
     -> FilePath
     -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
 initWatcher proxy filtIn i p = do
-    let check = case watcherType proxy of
+    let check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
             WatchFile -> doesFileExist
     liftIO (check p) >>= guard
@@ -250,7 +249,7 @@ initWatcher proxy filtIn i p = do
     -- NOTE: This may create duplicate events if the 'Inotify.Watch' also
     -- catches the interesting content. This must be handled by the
     -- state-modifying code.
-    when (watcherType proxy == WatchDirectory) $ liftIO $ do
+    when (W.watcherType proxy == WatchDirectory) $ liftIO $ do
         let (_, checkFile) = layerFilter proxy filtIn
         fs <- lenientListDirectory p
         es <- witherM checkFile fs
