@@ -41,7 +41,9 @@ import BuildTop.Util
 
 import Debug.Pretty.Simple
 
--- | A function to fire an Event and a filter to decide which events get fired
+-- | The inotify events don't carry any state except the 'Inotify.Watch' that
+--   they are associated with, so this holds any state associated with any
+--   'Inotify.Watch' that are created.
 type WatchMap = HashMap Inotify.Watch WatchMapData
 
 type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
@@ -50,7 +52,7 @@ type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
 --   This hides the 'WatchLayer' type-level information which is carried by
 --   'WatcherKey' and 'FilterInput'.
 data WatchMapData where
-    WatchMapData :: (IsWatcher l, HasFilter l)
+    WatchMapData :: (BasicLayer l, HasFilter l)
         => (MyEvent -> IO ())
         -> (Inotify.Event -> Maybe BuildTopEvent)
         -> WatcherKey l
@@ -62,7 +64,7 @@ data WatchMapData where
 --   anything that mentions the inner @l@ type.
 withWatchMapData
     :: WatchMapData
-    -> ( forall l. (IsWatcher l, HasFilter l)
+    -> ( forall l. (BasicLayer l, HasFilter l)
          => (MyEvent -> IO ())
          -> (Inotify.Event -> Maybe BuildTopEvent)
          -> WatcherKey l
@@ -162,7 +164,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
         (_, oldState) <- ask
         forM_ oldState $ \(oldWatcher, _) -> updateAllWatcher go oldWatcher
       where
-        go :: forall x. IsWatcher x
+        go :: forall x. BasicLayer x
             => Watcher x t (WatcherData t)
             -> m (Watcher x t (WatcherData t))
         go w = do
@@ -177,7 +179,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
 
 watcherHelper
     :: forall l t m.
-        ( IsWatcher l
+        ( BasicLayer l
         , HasFilter l
         , Reflex t
         , TriggerEvent t m
@@ -225,7 +227,7 @@ watcherHelper key filtIn path = do
         (inot, _) <- ask
         initWatcher proxy filtIn inot path
 
-initWatcher :: (IsWatcher l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
+initWatcher :: (BasicLayer l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
     => Proxy l
     -> FilterInput l
     -> Inotify.Inotify

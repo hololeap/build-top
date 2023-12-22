@@ -56,7 +56,9 @@ data WatchLayer
 
 type LockFileExists = Bool
 
-class HasChildren (l :: WatchLayer) where
+-- | A class with methods specific to layers that have children (e.g. all
+--   but 'LogFileLayer').
+class ParentLayer (l :: WatchLayer) where
     type ChildContainer l :: Type -> Type
     type ChildContainerKey l :: Type
     type ChildLayer l :: WatchLayer
@@ -69,7 +71,7 @@ class HasChildren (l :: WatchLayer) where
     --
     --   (Inspired by @witherM@ from the @witherable@ package)
     witherWatcher :: Monad m
-        => (forall x. (IsWatcher x, Eq (Watcher x t a))
+        => (forall x. (BasicLayer x, Eq (Watcher x t a))
                 => Watcher x t a -> m (Maybe (Watcher x t a))
            )
         -> Watcher l t a
@@ -89,7 +91,7 @@ class HasChildren (l :: WatchLayer) where
 --
 --   See 'InsertPayload' for more information on how to use it.
 insertWatcher
-    :: HasChildren l
+    :: ParentLayer l
     => InsertPayload t a
     -> Watcher l t a
     -> Watcher l t a
@@ -119,7 +121,7 @@ insertWatcher (InsertPayload key child) =
 --
 --   See 'DeletePayload' for more information on how to use it.
 deleteWatcher
-    :: HasChildren l
+    :: ParentLayer l
     => DeletePayload
     -> Watcher l t a
     -> Watcher l t a
@@ -133,7 +135,7 @@ deleteWatcher (DeletePayload key) =
 
 -- | Update the state of the lock file for a given package.
 updateLockFile
-    :: HasChildren l
+    :: ParentLayer l
     => LockFileExists
     -> Package
     -> Watcher l t a
@@ -173,16 +175,16 @@ data AlterPayload t m a where
 -- | Holds the key of the parent and the new child. Used by 'insertWatcher'.
 data InsertPayload t a where
     InsertPayload
-        :: HasChildren l
+        :: ParentLayer l
         => WatcherKey l
         -> Watcher (ChildLayer l) t a
         -> InsertPayload t a
 
 -- | Holds the key of the watcher to be deleted. Used by 'deleteWatcher'
 data DeletePayload where
-    DeletePayload :: IsWatcher l => WatcherKey l -> DeletePayload
+    DeletePayload :: BasicLayer l => WatcherKey l -> DeletePayload
 
-instance HasChildren 'RootLayer where
+instance ParentLayer 'RootLayer where
     type ChildContainer 'RootLayer = HashMap Category
     type ChildContainerKey 'RootLayer = Category
     type ChildLayer 'RootLayer = 'CategoryLayer
@@ -216,7 +218,7 @@ instance HasChildren 'RootLayer where
                 cat
                 cs
 
-instance HasChildren 'CategoryLayer where
+instance ParentLayer 'CategoryLayer where
     type ChildContainer 'CategoryLayer = HashMap Package
     type ChildContainerKey 'CategoryLayer = Package
     type ChildLayer 'CategoryLayer = 'PackageLayer
@@ -245,7 +247,7 @@ instance HasChildren 'CategoryLayer where
             let alt (b,w) = (b,) <$> lift (alterWatcher up w)
             in M.alterF (runMaybeT . (alt <=< liftMaybe)) pkg cs
 
-instance HasChildren 'PackageLayer where
+instance ParentLayer 'PackageLayer where
     type ChildContainer 'PackageLayer = Maybe
     type ChildContainerKey 'PackageLayer = ()
     type ChildLayer 'PackageLayer = 'TempDirLayer
@@ -263,7 +265,7 @@ instance HasChildren 'PackageLayer where
             _ -> pure cs
         pure $ PackageWatcher cs' pkg d
 
-instance HasChildren 'TempDirLayer where
+instance ParentLayer 'TempDirLayer where
     type ChildContainer 'TempDirLayer = Maybe
     type ChildContainerKey 'TempDirLayer = ()
     type ChildLayer 'TempDirLayer = 'LogFileLayer
@@ -279,9 +281,10 @@ instance HasChildren 'TempDirLayer where
             _ -> pure cs
         pure $ TempDirWatcher cs' p d
 
-class IsWatcher (l :: WatchLayer) where
+-- | A class with methods for all layers of the 'Watcher' tree.
+class BasicLayer (l :: WatchLayer) where
     watcherType :: proxy l -> WatchType
-    default watcherType :: HasChildren l => proxy l -> WatchType
+    default watcherType :: ParentLayer l => proxy l -> WatchType
     watcherType _ = WatchDirectory
 
     -- | Return the @a@ from the data structure
@@ -291,7 +294,7 @@ class IsWatcher (l :: WatchLayer) where
     --   child tree
     getWatchers :: Watcher l t a -> [a]
     default getWatchers
-        :: (HasChildren l, IsWatcher (ChildLayer l), Foldable (ChildContainer l))
+        :: (ParentLayer l, BasicLayer (ChildLayer l), Foldable (ChildContainer l))
         => Watcher l t a -> [a]
     getWatchers w = getWatcher w : foldMap getWatchers (getChildren w)
 
@@ -304,13 +307,18 @@ class IsWatcher (l :: WatchLayer) where
 
     -- | Apply an operation on every watcher in the tree, updating each one
     --   using the given function.
+    --
+    --   Note that the forest of children will be traversed /after/ the parent
+    --   has been updated. This means that if you modify the children during
+    --   the parent's update, the update will be applied directly to each
+    --   /modified/ child when the forest is traversed.
     updateAllWatcher
         :: Monad m
-        => (forall x. IsWatcher x => Watcher x t a -> m (Watcher x t a))
+        => (forall x. BasicLayer x => Watcher x t a -> m (Watcher x t a))
         -> Watcher l t a
         -> m (Watcher l t a)
 
-instance IsWatcher 'RootLayer where
+instance BasicLayer 'RootLayer where
     getWatcher = rootWatcher_Data
     lookupWatcher _ w0 = Just w0
     watcherKey _ = RootKey
@@ -321,7 +329,7 @@ instance IsWatcher 'RootLayer where
             pure $ RootWatcher cs' fp d
 
 
-instance IsWatcher 'CategoryLayer where
+instance BasicLayer 'CategoryLayer where
     getWatcher = categoryWatcher_Data
     lookupWatcher (CategoryKey c) w0 =
         M.lookup c (rootWatcher_Children w0)
@@ -332,7 +340,7 @@ instance IsWatcher 'CategoryLayer where
             cs' <- traverse (\(b,w) -> (b,) <$> f w) cs
             pure $ CategoryWatcher cs' cat d
 
-instance IsWatcher 'PackageLayer where
+instance BasicLayer 'PackageLayer where
     getWatcher = packageWatcher_Data
     lookupWatcher (PackageKey p) w0 = do
         w <- lookupWatcher (CategoryKey (getCategory p)) w0
@@ -344,7 +352,7 @@ instance IsWatcher 'PackageLayer where
             cs' <- traverse f cs
             pure $ PackageWatcher cs' pkg d
 
-instance IsWatcher 'TempDirLayer where
+instance BasicLayer 'TempDirLayer where
     getWatcher = tempDirWatcher_Data
     lookupWatcher (TempDirKey p) w0 = do
         w <- lookupWatcher (PackageKey p) w0
@@ -356,7 +364,7 @@ instance IsWatcher 'TempDirLayer where
             cs' <- traverse f cs
             pure $ TempDirWatcher cs' cat d
 
-instance IsWatcher 'LogFileLayer where
+instance BasicLayer 'LogFileLayer where
     watcherType _ = WatchFile
     getWatcher = logFileWatcher_Data
     getWatchers = (:[]) . getWatcher
@@ -399,12 +407,12 @@ data Watcher (l :: WatchLayer) t a where
         } -> Watcher 'LogFileLayer t a
 
 deriving instance Functor (Watcher l t)
-deriving instance IsWatcher l => Traversable (Watcher l t)
+deriving instance BasicLayer l => Traversable (Watcher l t)
 
 -- TODO: Is this necessary or does the derived Foldable instance work as
 --       intended? Set up a test case to see if the derived Foldable matches
 --       this.
-instance IsWatcher l => Foldable (Watcher l t) where
+instance BasicLayer l => Foldable (Watcher l t) where
     foldMap f = foldMap f . getWatchers
 
 instance Eq (Watcher 'RootLayer t a) where
