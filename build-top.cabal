@@ -49,6 +49,7 @@ library
     import: all
     exposed-modules:
         , BuildTop.Debug
+        , BuildTop.Filesystem
         , BuildTop.Filters
         , BuildTop.Loop
         , BuildTop.State

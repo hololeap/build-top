@@ -37,6 +37,7 @@ import Witherable
 import Data.Parsable hiding ((<|>))
 import Distribution.Portage.Types
 
+import BuildTop.Filesystem
 import BuildTop.Filters
 import BuildTop.Types
 import BuildTop.Util
