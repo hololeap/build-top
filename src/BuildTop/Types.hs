@@ -37,10 +37,3 @@ data BuildTopEvent
     | LogFileEvent EventType Package
     | LogFileWriteEvent Package
     deriving (Show, Eq, Ord)
-
--- | Trigger a 'BuildTopEvent' either with an inotify event or a manual
--- | event passed as a FilePath (the name of a file/directory).
-type EventFilter =
-    ( Inotify.Event -> Maybe BuildTopEvent
-    , FilePath -> IO (Maybe BuildTopEvent)
-    )

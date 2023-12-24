@@ -16,6 +16,17 @@ import System.FilePath
 import BuildTop.Types
 import BuildTop.Util
 
+-- | Trigger a 'BuildTopEvent'. This needs to be possible with both with an
+--   'Inotify.Event' as an input, and with a basic 'FilePath' (the name of a
+--   newly discoverered file/directory) as an input.
+--
+--   Note that the 'FilePath' is not absolute, but a file or directory name
+--   e.g. directly from 'listDirectory'.
+data EventFilter = EventFilter
+    { inotifyFilter :: Event -> Maybe BuildTopEvent
+    , filePathFilter :: FilePath -> IO (Maybe BuildTopEvent)
+    }
+
 class HasFilter (l :: WatchLayer) where
     type FilterInput l
     layerMask :: proxy l -> Mask WatchFlag
@@ -24,7 +35,7 @@ class HasFilter (l :: WatchLayer) where
 instance HasFilter 'RootLayer where
     type FilterInput 'RootLayer = ()
     layerMask _ = in_CREATE <> in_DELETE
-    layerFilter _ _ =
+    layerFilter _ _ = EventFilter
         ( \(Event _ m _ n) -> case
             ( isSubset in_ISDIR m
             , isSubset in_CREATE m
@@ -34,7 +45,8 @@ instance HasFilter 'RootLayer where
                 (True, True, _, Just c) -> Just $ CategoryEvent AddEvent c
                 (True, _, True, Just c) -> Just $ CategoryEvent RemoveEvent c
                 _ -> Nothing
-        , \fp -> runMaybeT $ do
+        )
+        ( \fp -> runMaybeT $ do
             c <- MaybeT $ pure $ parseMaybe fp
             liftIO (doesDirectoryExist fp) >>= guard
             pure $ CategoryEvent AddEvent c
@@ -43,7 +55,7 @@ instance HasFilter 'RootLayer where
 instance HasFilter 'CategoryLayer where
     type FilterInput 'CategoryLayer = Category
     layerMask _ = in_CREATE <> in_DELETE
-    layerFilter _ c =
+    layerFilter _ c = EventFilter
         ( \(Event _ m _ n) -> case
             ( isSubset in_ISDIR m
             , isSubset in_CREATE m
@@ -56,7 +68,8 @@ instance HasFilter 'CategoryLayer where
                 (False, True, _, _, Just p) -> Just $ LockFileEvent AddEvent p
                 (False, _, True, _, Just p) -> Just $ LockFileEvent RemoveEvent p
                 _ -> Nothing
-        , \fp -> runMaybeT $ do
+        )
+        ( \fp -> runMaybeT $ do
             isD <- liftIO $ doesDirectoryExist fp
             isF <- liftIO $ doesFileExist fp
             case
@@ -75,7 +88,7 @@ instance HasFilter 'CategoryLayer where
 instance HasFilter 'PackageLayer where
     type FilterInput 'PackageLayer = Package
     layerMask _ = in_CREATE <> in_DELETE
-    layerFilter _ p =
+    layerFilter _ p = EventFilter
         ( \(Event _ m _ n) -> case
             ( decodeString n == "temp"
             , isSubset in_ISDIR m
@@ -85,7 +98,8 @@ instance HasFilter 'PackageLayer where
                 (True, True, True, _) -> Just $ TempDirEvent AddEvent p
                 (True, True, _, True) -> Just $ TempDirEvent RemoveEvent p
                 _ -> Nothing
-        , \fp -> runMaybeT $ do
+        )
+        ( \fp -> runMaybeT $ do
             guard $ fp == "temp"
             liftIO (doesDirectoryExist fp) >>= guard
             pure $ TempDirEvent AddEvent p
@@ -94,7 +108,7 @@ instance HasFilter 'PackageLayer where
 instance HasFilter 'TempDirLayer where
     type FilterInput 'TempDirLayer = Package
     layerMask _ = in_CREATE <> in_DELETE
-    layerFilter _ p =
+    layerFilter _ p = EventFilter
         ( \(Event _ m _ n) -> case
             ( decodeString n == "build.log"
                 , isSubset in_ISDIR m
@@ -104,7 +118,8 @@ instance HasFilter 'TempDirLayer where
                     (True, False, True, _) -> Just $ LogFileEvent AddEvent p
                     (True, False, _, True) -> Just $ LogFileEvent RemoveEvent p
                     _ -> Nothing
-        , \fp -> runMaybeT $ do
+        )
+        ( \fp -> runMaybeT $ do
             guard $ fp == "build.log"
             liftIO (doesFileExist fp) >>= guard
             pure $ LogFileEvent AddEvent p
@@ -113,11 +128,12 @@ instance HasFilter 'TempDirLayer where
 instance HasFilter 'LogFileLayer where
     type FilterInput 'LogFileLayer = Package
     layerMask _ = in_CLOSE_WRITE
-    layerFilter _ p =
+    layerFilter _ p = EventFilter
         ( \(Event _ m _ _) -> case
             ( isSubset in_CLOSE_WRITE m
             ) of
                 (True) -> Just $ LogFileWriteEvent p
                 _ -> Nothing
-        , \_ -> pure Nothing -- Nothing can be done with just a "build.log" string
+        )
+        ( \_ -> pure Nothing -- Nothing can be done with just a "build.log" string
         )

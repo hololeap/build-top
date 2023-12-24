@@ -287,7 +287,7 @@ watcherHelper key filtIn path = do
         check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
             WatchFile -> doesFileExist
-        filt = fst (layerFilter proxy filtIn)
+        filt = inotifyFilter (layerFilter proxy filtIn)
     liftIO (check path) >>= guard
 
     (iWatch, rEvent, eAct) <- recycleState <|> createState proxy
@@ -342,7 +342,7 @@ initWatcher proxy filtIn i p = do
     -- catches the interesting content. This must be handled by the
     -- state-modifying code.
     when (W.watcherType proxy == WatchDirectory) $ liftIO $ do
-        let (_, checkFile) = layerFilter proxy filtIn
+        let checkFile = filePathFilter (layerFilter proxy filtIn)
         fs <- lenientListDirectory p
         es <- witherM checkFile fs
         mapM_ eIO (That <$> es)
