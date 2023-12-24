@@ -18,7 +18,8 @@ eventLoop :: MonadIO m
 eventLoop i wmRef = liftIO $ async $ forever $ do
     wm <- readIORef wmRef
     e@(Inotify.Event w _ _ _) <- Inotify.getEvent i
-    forM_ (M.lookup w wm) $ \(WatchMapData eIO filt _ _ _) -> eIO $
-        case filt e of
-            Just bte -> These e bte
-            Nothing -> This e
+    forM_ (M.lookup w wm) $ \d ->
+        withWatchMapData d $ \eIO filt _ _ _ -> eIO $
+            case filt e of
+                Just bte -> These e bte
+                Nothing -> This e

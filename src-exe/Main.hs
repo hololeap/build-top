@@ -27,8 +27,7 @@ app :: MonadHeadlessApp t m => m (Event t ())
 app = mdo
     runMaybeT $ do
         i <- liftIO $ Inotify.init
-        Just (rw, wm) <- flip runReaderT (i, Nothing)
-            $ scanState "/var/tmp/portage"
+        Just (rw, wm) <- scanState "/var/tmp/portage" i Nothing
         wmRef <- liftIO $ newIORef wm
         eventLoop i wmRef
         liftIO $ print $ M.size $ W.rootWatcher_Children rw

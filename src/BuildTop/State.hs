@@ -6,7 +6,14 @@
 {-# Language TupleSections #-}
 {-# Language TypeApplications #-}
 
-module BuildTop.State where
+module BuildTop.State
+    ( WatchMap
+    , BuildTopState
+    , WatchMapData
+    , withWatchMapData
+    , scanState
+    , updateWatchState
+    ) where
 
 import Control.Applicative ((<|>))
 import Control.Monad
@@ -86,9 +93,10 @@ scanState :: forall t m0.
     ( Reflex t
     , TriggerEvent t m0
     , MonadIO m0
-    , MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m0
     )
     => FilePath
+    -> Inotify.Inotify
+    -> Maybe (BuildTopState t)
     -> m0 (Maybe (BuildTopState t))
 scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
     let proxy0 = Proxy @'RootLayer
@@ -158,8 +166,12 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
         let mkTuple k = runMaybeT $ (k,) <$> f k
         in  M.fromList . catMaybes <$> traverse mkTuple ks
 
-    finish :: Functor f => f (Maybe a, b) -> f (Maybe (a, b))
-    finish = fmap $ \(ma, b) -> (,b) <$> ma
+    finish
+        :: ReaderT (Inotify.Inotify, Maybe (BuildTopState t)) m0 (Maybe a, b)
+        -> Inotify.Inotify
+        -> Maybe (BuildTopState t)
+        -> m0 (Maybe (a, b))
+    finish f inot s0 = runReaderT (fmap (\(ma, b) -> (,b) <$> ma) f) (inot,s0)
 
     cleanupOldState :: forall m.
         (MonadIO m, MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m)
@@ -180,6 +192,80 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
             -- We use updateAllWatcher to traverse the old tree, but nothing
             -- actually needs to get modified.
             pure w
+
+-- | When certain events fire, we need to update the state of the Watcher
+updateWatchState
+    :: forall t m0. (Reflex t, TriggerEvent t m0, MonadIO m0)
+    => Inotify.Inotify
+    -> Inotify.Event
+    -> BuildTopEvent
+    -> BuildTopState t
+    -> m0 (BuildTopState t)
+updateWatchState i ie e0 s0@(w0,wm0) = finish $ case e0 of
+    CategoryEvent AddEvent cat -> do
+        let key = RootKey
+        d <- withFilePath $ watcherHelper key ()
+        ins $ InsertPayload key $ CategoryWatcher M.empty cat d
+    CategoryEvent RemoveEvent cat -> del $ CategoryKey cat
+    PackageEvent AddEvent pkg -> do
+        let cat = getCategory pkg
+            key = CategoryKey cat
+        d <- withFilePath $ watcherHelper key cat
+        ins $ InsertPayload key $ PackageWatcher Nothing pkg d
+    PackageEvent RemoveEvent pkg -> del $ PackageKey pkg
+    LockFileEvent e pkg ->
+        let b = case e of
+                    AddEvent -> True
+                    RemoveEvent -> False
+        in pure $ W.updateLockFile b pkg w0
+    TempDirEvent AddEvent pkg -> do
+        let key = PackageKey pkg
+        d <- withFilePath $ watcherHelper key pkg
+        ins $ InsertPayload key $ TempDirWatcher Nothing pkg d
+    TempDirEvent RemoveEvent pkg -> del $ TempDirKey pkg
+    LogFileEvent AddEvent pkg -> do
+        let key = TempDirKey pkg
+        d <- withFilePath $ watcherHelper key pkg
+        ins $ InsertPayload key $ LogFileWatcher pkg d
+    LogFileEvent RemoveEvent pkg -> del $ LogFileKey pkg
+    LogFileWriteEvent _ -> pure w0
+  where
+
+    ins :: Applicative f
+        => InsertPayload t (WatcherData t)
+        -> f (Watcher 'RootLayer t (WatcherData t))
+    ins payload = pure $ W.insert payload w0
+
+    del :: (BasicLayer l, Applicative f)
+        => WatcherKey l
+        -> f (Watcher 'RootLayer t (WatcherData t))
+    del key = pure $ W.delete (DeletePayload key) w0
+
+    withFilePath :: (FilePath -> r) -> r
+    withFilePath f =
+        let wd = Inotify.wd ie
+            errMsg = unlines
+                [ "Could not find watch descriptor"
+                , show wd
+                , "in WatchMap" ]
+        in case M.lookup wd wm0 of
+                Just wmd -> withWatchMapData wmd $ \_ _ _ _ fp -> f fp
+                Nothing -> error errMsg
+
+    finish
+        :: MaybeT
+            ( StateT
+                WatchMap
+                (ReaderT (Inotify.Inotify, Maybe (BuildTopState t)) m0)
+            )
+            (Watcher 'RootLayer t (WatcherData t))
+        -> m0 (BuildTopState t)
+    finish m = do
+        -- Create the environment needed for watchHelper
+        (mw, wm) <- runReaderT (runStateT (runMaybeT m) wm0) (i, Just s0)
+        -- Return the new state if a new Watcher was created, otherwise
+        -- return the old state.
+        pure $ maybe s0 (,wm) mw
 
 watcherHelper
     :: forall l t m.
@@ -261,77 +347,3 @@ initWatcher proxy filtIn i p = do
         mapM_ eIO (That <$> es)
 
     pure (w, e, eIO)
-
--- | When certain events fire, we need to update the state of the Watcher
-updateWatchState
-    :: forall t m0. (Reflex t, TriggerEvent t m0, MonadIO m0)
-    => Inotify.Inotify
-    -> Inotify.Event
-    -> BuildTopEvent
-    -> BuildTopState t
-    -> m0 (BuildTopState t)
-updateWatchState i ie e0 s0@(w0,wm0) = finish $ case e0 of
-    CategoryEvent AddEvent cat -> do
-        let key = RootKey
-        d <- withFilePath $ watcherHelper key ()
-        ins $ InsertPayload key $ CategoryWatcher M.empty cat d
-    CategoryEvent RemoveEvent cat -> del $ CategoryKey cat
-    PackageEvent AddEvent pkg -> do
-        let cat = getCategory pkg
-            key = CategoryKey cat
-        d <- withFilePath $ watcherHelper key cat
-        ins $ InsertPayload key $ PackageWatcher Nothing pkg d
-    PackageEvent RemoveEvent pkg -> del $ PackageKey pkg
-    LockFileEvent e pkg ->
-        let b = case e of
-                    AddEvent -> True
-                    RemoveEvent -> False
-        in pure $ W.updateLockFile b pkg w0
-    TempDirEvent AddEvent pkg -> do
-        let key = PackageKey pkg
-        d <- withFilePath $ watcherHelper key pkg
-        ins $ InsertPayload key $ TempDirWatcher Nothing pkg d
-    TempDirEvent RemoveEvent pkg -> del $ TempDirKey pkg
-    LogFileEvent AddEvent pkg -> do
-        let key = TempDirKey pkg
-        d <- withFilePath $ watcherHelper key pkg
-        ins $ InsertPayload key $ LogFileWatcher pkg d
-    LogFileEvent RemoveEvent pkg -> del $ LogFileKey pkg
-    LogFileWriteEvent _ -> pure w0
-  where
-
-    ins :: Applicative f
-        => InsertPayload t (WatcherData t)
-        -> f (Watcher 'RootLayer t (WatcherData t))
-    ins payload = pure $ W.insert payload w0
-
-    del :: (BasicLayer l, Applicative f)
-        => WatcherKey l
-        -> f (Watcher 'RootLayer t (WatcherData t))
-    del key = pure $ W.delete (DeletePayload key) w0
-
-    withFilePath :: (FilePath -> r) -> r
-    withFilePath f =
-        let wd = Inotify.wd ie
-            errMsg = unlines
-                [ "Could not find watch descriptor"
-                , show wd
-                , "in WatchMap" ]
-        in case M.lookup wd wm0 of
-                Just wmd -> withWatchMapData wmd $ \_ _ _ _ fp -> f fp
-                Nothing -> error errMsg
-
-    finish
-        :: MaybeT
-            ( StateT
-                WatchMap
-                (ReaderT (Inotify.Inotify, Maybe (BuildTopState t)) m0)
-            )
-            (Watcher 'RootLayer t (WatcherData t))
-        -> m0 (BuildTopState t)
-    finish m = do
-        -- Create the environment needed for watchHelper
-        (mw, wm) <- runReaderT (runStateT (runMaybeT m) wm0) (i, Just s0)
-        -- Return the new state if a new Watcher was created, otherwise
-        -- return the old state.
-        pure $ maybe s0 (,wm) mw
