@@ -29,6 +29,7 @@ import Witherable (witherM)
 
 import Distribution.Portage.Types
 
+import BuildTop.Filesystem
 import BuildTop.Types
 import BuildTop.Util
 
@@ -361,7 +362,7 @@ data WatcherData t = WatcherData
 data Watcher (l :: WatchLayer) t a where
     RootWatcher ::
         { rootWatcher_Children :: HashMap Category (Watcher 'CategoryLayer t a)
-        , rootWatcher_Path :: FilePath
+        , rootWatcher_Path :: RealPath
         , rootWatcher_Data :: a
         } -> Watcher 'RootLayer t a
     CategoryWatcher ::

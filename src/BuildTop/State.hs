@@ -30,7 +30,6 @@ import qualified Data.Set as S
 import Data.These
 import Reflex
 import System.Directory
-import System.FilePath
 import qualified System.Linux.Inotify as Inotify
 import Witherable
 
@@ -38,6 +37,7 @@ import Data.Parsable hiding ((<|>))
 import Distribution.Portage.Types
 
 import BuildTop.Filesystem
+import qualified BuildTop.Filesystem as FS
 import BuildTop.Filters
 import BuildTop.Types
 import BuildTop.Util
@@ -69,7 +69,7 @@ data WatchMapData where
         -> (Inotify.Event -> Maybe BuildTopEvent)
         -> WatcherKey l
         -> FilterInput l
-        -> FilePath
+        -> RealPath
         -> WatchMapData
 
 -- | Run a function using 'WatchMapData'. The function /must not/ return
@@ -81,7 +81,7 @@ withWatchMapData
          -> (Inotify.Event -> Maybe BuildTopEvent)
          -> WatcherKey l
          -> FilterInput l
-         -> FilePath
+         -> RealPath
          -> r
        )
     -> r
@@ -95,7 +95,7 @@ scanState :: forall t m0.
     , TriggerEvent t m0
     , MonadIO m0
     )
-    => FilePath
+    => RealPath
     -> Inotify.Inotify
     -> Maybe (BuildTopState t)
     -> m0 (Maybe (BuildTopState t))
@@ -114,7 +114,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
             key1 = CategoryKey c
 
         -- Create the watcher for the category directory
-        let path1 = path0 </> toString c
+        let path1 = path0 `FS.append` toString c
         data1 <- watcherHelper key1 c path1
 
         -- Gather a set of packages with existing lockfiles and a
@@ -127,7 +127,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
                 key2 = PackageKey p
 
             -- Create the watcher for the package dir
-            let path2 = path0 </> toString p
+            let path2 = path0 `FS.append` toString p
             data2 <- watcherHelper key2 p path2
 
             -- does the lock file exist?
@@ -242,7 +242,7 @@ updateWatchState i ie e0 s0@(w0,wm0) = finish $ case e0 of
         -> f (Watcher 'RootLayer t (WatcherData t))
     del key = pure $ W.delete (DeletePayload key) w0
 
-    withFilePath :: (FilePath -> r) -> r
+    withFilePath :: (RealPath -> r) -> r
     withFilePath f =
         let wd = Inotify.wd ie
             errMsg = unlines
@@ -280,18 +280,19 @@ watcherHelper
         )
     => WatcherKey l
     -> FilterInput l
-    -> FilePath
+    -> RealPath
     -> MaybeT m (WatcherData t)
-watcherHelper key filtIn path = do
+watcherHelper key filtIn rp = do
     let proxy = Proxy @l
         check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
             WatchFile -> doesFileExist
         filt = inotifyFilter (layerFilter proxy filtIn)
+        (RealPath path) = rp
     liftIO (check path) >>= guard
 
     (iWatch, rEvent, eAct) <- recycleState <|> createState proxy
-    let mapData = WatchMapData eAct filt key filtIn path
+    let mapData = WatchMapData eAct filt key filtIn rp
     modify $ M.insert iWatch mapData
 
     pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
@@ -316,18 +317,19 @@ watcherHelper key filtIn path = do
         -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
     createState proxy = do
         (inot, _) <- ask
-        initWatcher proxy filtIn inot path
+        initWatcher proxy filtIn inot rp
 
 initWatcher :: (BasicLayer l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
     => Proxy l
     -> FilterInput l
     -> Inotify.Inotify
-    -> FilePath
+    -> RealPath
     -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
-initWatcher proxy filtIn i p = do
+initWatcher proxy filtIn i rp = do
     let check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
             WatchFile -> doesFileExist
+        (RealPath p) = rp
     liftIO (check p) >>= guard
     pTraceMForceColor $ "directory " ++ p ++ " exists"
     let m = layerMask proxy
@@ -343,7 +345,7 @@ initWatcher proxy filtIn i p = do
     -- state-modifying code.
     when (W.watcherType proxy == WatchDirectory) $ liftIO $ do
         let checkFile = filePathFilter (layerFilter proxy filtIn)
-        fs <- lenientListDirectory p
+        fs <- lenientListDirectory rp
         es <- witherM checkFile fs
         mapM_ eIO (That <$> es)
 
