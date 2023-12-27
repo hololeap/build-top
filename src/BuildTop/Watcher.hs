@@ -23,7 +23,6 @@ import Data.Kind
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as M
 import Data.Maybe (fromMaybe)
-import Reflex
 import qualified System.Linux.Inotify as Inotify
 import Witherable (witherM)
 
@@ -41,7 +40,7 @@ class ParentLayer (l :: WatchLayer) where
     type ChildContainer l :: Type -> Type
     type ChildContainerKey l :: Type
     type ChildLayer l :: WatchLayer
-    getChildren :: Watcher l t a -> ChildContainer l (Watcher (ChildLayer l) t a)
+    getChildren :: Watcher l a -> ChildContainer l (Watcher (ChildLayer l) a)
 
     -- | Map a @Watcher@'s children to another value. If the inner function
     --   returns @Nothing@, the child will be deleted.
@@ -50,11 +49,11 @@ class ParentLayer (l :: WatchLayer) where
     --
     --   (Inspired by @witherM@ from the @witherable@ package)
     wither :: Monad m
-        => (forall x. (BasicLayer x, Eq (Watcher x t a))
-                => Watcher x t a -> m (Maybe (Watcher x t a))
+        => (forall x. (BasicLayer x, Eq (Watcher x a))
+                => Watcher x a -> m (Maybe (Watcher x a))
            )
-        -> Watcher l t a
-        -> m (Watcher l t a)
+        -> Watcher l a
+        -> m (Watcher l a)
 
     -- | Very generic way to alter a specific part of the watcher tree. This
     --   is able to insert, delete, or update.
@@ -62,18 +61,18 @@ class ParentLayer (l :: WatchLayer) where
     --   See 'AlterPayload' for more information on how to use it.
     alter
         :: Monad m
-        => AlterPayload t m a
-        -> Watcher l t a
-        -> m (Watcher l t a)
+        => AlterPayload m a
+        -> Watcher l a
+        -> m (Watcher l a)
 
 -- | Insert a child for the given parent
 --
 --   See 'InsertPayload' for more information on how to use it.
 insert
     :: ParentLayer l
-    => InsertPayload t a
-    -> Watcher l t a
-    -> Watcher l t a
+    => InsertPayload a
+    -> Watcher l a
+    -> Watcher l a
 insert (InsertPayload key child) =
     let f = case key of
                 RootKey -> \(RootWatcher cs fp d) ->
@@ -102,8 +101,8 @@ insert (InsertPayload key child) =
 delete
     :: ParentLayer l
     => DeletePayload
-    -> Watcher l t a
-    -> Watcher l t a
+    -> Watcher l a
+    -> Watcher l a
 delete (DeletePayload key) =
               -- delete the watcher with the matching key
     let f w | watcherKey w == key = empty
@@ -117,8 +116,8 @@ updateLockFile
     :: ParentLayer l
     => LockFileExists
     -> Package
-    -> Watcher l t a
-    -> Watcher l t a
+    -> Watcher l a
+    -> Watcher l a
 updateLockFile lfe pkg =
     let cat = getCategory pkg
     in runIdentity
@@ -145,19 +144,19 @@ updateLockFile lfe pkg =
 --
 --   Hides 'WatchLayer' information from top-level. This allows for passing
 --   the data down through the tree in a uniform way.
-data AlterPayload t m a where
+data AlterPayload m a where
     AlterPayload
         :: WatcherKey l
-        -> (Maybe (Watcher l t a) -> m (Maybe (Watcher l t a)))
-        -> AlterPayload t m a
+        -> (Maybe (Watcher l a) -> m (Maybe (Watcher l a)))
+        -> AlterPayload m a
 
 -- | Holds the key of the parent and the new child. Used by 'insertWatcher'.
-data InsertPayload t a where
+data InsertPayload a where
     InsertPayload
         :: ParentLayer l
         => WatcherKey l
-        -> Watcher (ChildLayer l) t a
-        -> InsertPayload t a
+        -> Watcher (ChildLayer l) a
+        -> InsertPayload a
 
 -- | Holds the key of the watcher to be deleted. Used by 'deleteWatcher'
 data DeletePayload where
@@ -267,22 +266,22 @@ class BasicLayer (l :: WatchLayer) where
     watcherType _ = WatchDirectory
 
     -- | Return the @a@ from the data structure
-    extract :: Watcher l t a -> a
+    extract :: Watcher l a -> a
 
     -- | Return the @a@ from the data structure as well as all @a@s from the
     --   child tree
-    toList :: Watcher l t a -> [a]
+    toList :: Watcher l a -> [a]
     default toList
         :: (ParentLayer l, BasicLayer (ChildLayer l), Foldable (ChildContainer l))
-        => Watcher l t a -> [a]
+        => Watcher l a -> [a]
     toList w = extract w : foldMap toList (getChildren w)
 
     lookup
         :: WatcherKey l
-        -> Watcher 'RootLayer t a
-        -> Maybe (Watcher l t a)
+        -> Watcher 'RootLayer a
+        -> Maybe (Watcher l a)
 
-    watcherKey :: Watcher l t a -> WatcherKey l
+    watcherKey :: Watcher l a -> WatcherKey l
 
     -- | Apply an operation on every watcher in the tree, updating each one
     --   using the given function.
@@ -293,9 +292,9 @@ class BasicLayer (l :: WatchLayer) where
     --   /modified/ child when the forest is traversed.
     updateAll
         :: Monad m
-        => (forall x. BasicLayer x => Watcher x t a -> m (Watcher x t a))
-        -> Watcher l t a
-        -> m (Watcher l t a)
+        => (forall x. BasicLayer x => Watcher x a -> m (Watcher x a))
+        -> Watcher l a
+        -> m (Watcher l a)
 
 instance BasicLayer 'RootLayer where
     extract = rootWatcher_Data
@@ -354,59 +353,58 @@ instance BasicLayer 'LogFileLayer where
 
     updateAll f w = f w -- no children
 
-data WatcherData t = WatcherData
+newtype WatcherData = WatcherData
     { getWatch :: Inotify.Watch
-    , getEvent :: Event t MyEvent
     }
 
-data Watcher (l :: WatchLayer) t a where
+data Watcher (l :: WatchLayer) a where
     RootWatcher ::
-        { rootWatcher_Children :: HashMap Category (Watcher 'CategoryLayer t a)
+        { rootWatcher_Children :: HashMap Category (Watcher 'CategoryLayer a)
         , rootWatcher_Path :: RealPath
         , rootWatcher_Data :: a
-        } -> Watcher 'RootLayer t a
+        } -> Watcher 'RootLayer a
     CategoryWatcher ::
-        { categoryWatcher_Children :: HashMap Package (LockFileExists, Watcher 'PackageLayer t a)
+        { categoryWatcher_Children :: HashMap Package (LockFileExists, Watcher 'PackageLayer a)
         , categoryWatcher_Category :: Category
         , categoryWatcher_Data :: a
-        } -> Watcher 'CategoryLayer t a
+        } -> Watcher 'CategoryLayer a
     PackageWatcher ::
-        { packageWatcher_Children :: Maybe (Watcher 'TempDirLayer t a)
+        { packageWatcher_Children :: Maybe (Watcher 'TempDirLayer a)
         , packageWatcher_Package :: Package
         , packageWatcher_Data :: a
-        } -> Watcher 'PackageLayer t a
+        } -> Watcher 'PackageLayer a
     TempDirWatcher ::
-        { tempDirWatcher_Children :: Maybe (Watcher 'LogFileLayer t a)
+        { tempDirWatcher_Children :: Maybe (Watcher 'LogFileLayer a)
         , tempDirWatcher_Package :: Package
         , tempDirWatcher_Data :: a
-        } -> Watcher 'TempDirLayer t a
+        } -> Watcher 'TempDirLayer a
     LogFileWatcher ::
         { logFileWatcher_Package :: Package
         , logFileWatcher_Data :: a
-        } -> Watcher 'LogFileLayer t a
+        } -> Watcher 'LogFileLayer a
 
-deriving instance Functor (Watcher l t)
-deriving instance BasicLayer l => Traversable (Watcher l t)
+deriving instance Functor (Watcher l)
+deriving instance BasicLayer l => Traversable (Watcher l)
 
 -- TODO: Is this necessary or does the derived Foldable instance work as
 --       intended? Set up a test case to see if the derived Foldable matches
 --       this.
-instance BasicLayer l => Foldable (Watcher l t) where
+instance BasicLayer l => Foldable (Watcher l) where
     foldMap f = foldMap f . toList
 
-instance Eq (Watcher 'RootLayer t a) where
+instance Eq (Watcher 'RootLayer a) where
     (==) = (==) `on` rootWatcher_Path
 
-instance Eq (Watcher 'CategoryLayer t a) where
+instance Eq (Watcher 'CategoryLayer a) where
     (==) = (==) `on` categoryWatcher_Category
 
-instance Eq (Watcher 'PackageLayer t a) where
+instance Eq (Watcher 'PackageLayer a) where
     (==) = (==) `on` packageWatcher_Package
 
-instance Eq (Watcher 'TempDirLayer t a) where
+instance Eq (Watcher 'TempDirLayer a) where
     (==) = (==) `on` tempDirWatcher_Package
 
-instance Eq (Watcher 'LogFileLayer t a) where
+instance Eq (Watcher 'LogFileLayer a) where
     (==) = (==) `on` logFileWatcher_Package
 
 -- | Used to lookup a particular part of a Watcher tree

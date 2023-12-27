@@ -4,7 +4,6 @@
 
 module Main where
 
-import Control.Applicative
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Trans.Maybe
@@ -20,45 +19,21 @@ import BuildTop.Debug
 import BuildTop.Filesystem
 import BuildTop.Loop
 import BuildTop.State
-import BuildTop.Types
-import BuildTop.Util
 import qualified BuildTop.Watcher as W
 
 app :: MonadHeadlessApp t m => m (Event t ())
 app = mdo
-    runMaybeT $ do
+    _ <- runMaybeT $ do
         i <- liftIO $ Inotify.init
-        Just (rw, wm) <- scanState (RealPath "/var/tmp/portage") i Nothing
-        wmRef <- liftIO $ newIORef wm
-        eventLoop i wmRef
-        liftIO $ print $ M.size $ W.rootWatcher_Children rw
---         pPrintForceColor $ "Size of getEvents: " ++ show (length (getEvents rw))
-        let e = mergeList $ map W.getEvent (W.toList rw)
-        -- performEvent $ liftIO . (\e -> pPrintForceColor e *> pPrintForceColor (printEvent e)) <$> e
-        performEvent $ liftIO . pPrintForceColor . (fmap (first (printEvent rw))) <$> e
+        (e, fireE) <- newTriggerEvent
+        flip runReaderT (i, fireE) $ do
+            Just (rw,wm) <- scanState Nothing (RealPath "/var/tmp/portage")
+            wmRef <- liftIO $ newIORef wm
+            _ <- eventLoop wmRef
+            liftIO $ print $ M.size $ W.rootWatcher_Children rw
+            performEvent $ liftIO . pPrintForceColor . first (printEvent rw) <$> e
     liftIO $ putStrLn "end of 'app'"
     pure never
 
 main :: IO ()
 main = runHeadlessApp app
-
-
--- filterIEvents i e rw = case
---     ( check Inotify.in_ISDIR
---     , check Inotify.in_CREATE
---     , check Inotify.in_DELETE
---     , check Inotify.in_CLOSE_WRITE
---     ) of
---         (True, True, _, _) -> do
---             if L.isInfixOf "-" (Inotify.name e)
---
---   where
---     check = Inotify.isSubset (Inotify.mask e)
---
---     checkCatName [] = False
---     checkCatName n@(c:_)
---         | isAsciiLower c = L.isInfixOf "-" n
---         | otherwise = False
---
---     checkPkgVerName [] = False
---     checkPkgVerName (c:_) = isLetter c

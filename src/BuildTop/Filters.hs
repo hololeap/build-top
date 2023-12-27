@@ -16,15 +16,23 @@ import System.FilePath
 import BuildTop.Types
 import BuildTop.Util
 
--- | Trigger a 'BuildTopEvent'. This needs to be possible with both with an
---   'Inotify.Event' as an input, and with a basic 'FilePath' (the name of a
---   newly discoverered file/directory) as an input.
+-- | A rule list to potentially convert an 'Event' to a 'BuildTopEvent'.
+type InotifyFilter = Event -> Maybe BuildTopEvent
+
+-- | A rule list to potentially convert a 'FilePath' to a 'BuildTopEvent'. The
+--   result is wrapped in the 'IO' monad in case an IO check needs to be made,
+--   for instance a supplementary existance check.
 --
 --   Note that the 'FilePath' is not absolute, but a file or directory name
 --   e.g. directly from 'listDirectory'.
+type FilePathFilter = FilePath -> IO (Maybe BuildTopEvent)
+
+-- | Trigger a 'BuildTopEvent'. This needs to be possible with both with an
+--   'Inotify.Event' as an input, and with a basic 'FilePath' (the name of a
+--   newly discoverered file/directory) as an input.
 data EventFilter = EventFilter
-    { inotifyFilter :: Event -> Maybe BuildTopEvent
-    , filePathFilter :: FilePath -> IO (Maybe BuildTopEvent)
+    { inotifyFilter :: InotifyFilter
+    , filePathFilter :: FilePathFilter
     }
 
 class HasFilter (l :: WatchLayer) where

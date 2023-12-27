@@ -18,7 +18,6 @@ module BuildTop.State
 import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.IO.Class
-import Control.Monad.Reader
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Maybe
 import Data.Hashable
@@ -58,18 +57,17 @@ import Debug.Pretty.Simple
 --   'Inotify.Watch' that are created.
 type WatchMap = HashMap Inotify.Watch WatchMapData
 
-type BuildTopState t = (Watcher 'RootLayer t (WatcherData t), WatchMap)
+type BuildTopState = (Watcher 'RootLayer WatcherData, WatchMap)
 
 -- | A GADT which holds all the data needed whenever a @Inotify.Event@ fires.
 --   This hides the 'WatchLayer' type-level information which is carried by
 --   'WatcherKey' and 'FilterInput'.
 data WatchMapData where
     WatchMapData :: (BasicLayer l, HasFilter l)
-        => (MyEvent -> IO ())
-        -> (Inotify.Event -> Maybe BuildTopEvent)
-        -> WatcherKey l
-        -> FilterInput l
-        -> RealPath
+        => InotifyFilter -- ^ filter
+        -> WatcherKey l  -- ^ key for this node                          -- ^
+        -> FilterInput l -- ^ needed input for 'layerFilter'
+        -> RealPath      -- ^ path associated with this node
         -> WatchMapData
 
 -- | Run a function using 'WatchMapData'. The function /must not/ return
@@ -77,34 +75,31 @@ data WatchMapData where
 withWatchMapData
     :: WatchMapData
     -> ( forall l. (BasicLayer l, HasFilter l)
-         => (MyEvent -> IO ())
-         -> (Inotify.Event -> Maybe BuildTopEvent)
+         => (Inotify.Event -> Maybe BuildTopEvent)
          -> WatcherKey l
          -> FilterInput l
          -> RealPath
          -> r
        )
     -> r
-withWatchMapData (WatchMapData eAct filt key input path) f
-    = f eAct filt key input path
+withWatchMapData (WatchMapData filt key input path) f
+    = f filt key input path
 
 -- | Scan the portage temp directory, building the current @BuildTopState@.
 --   Will return @Nothing@ if the portage temp directory does not exist.
-scanState :: forall t m0.
-    ( Reflex t
-    , TriggerEvent t m0
-    , MonadIO m0
+scanState :: forall m0.
+    ( MonadIO m0
+    , MonadBuildTop m0
     )
-    => RealPath
-    -> Inotify.Inotify
-    -> Maybe (BuildTopState t)
-    -> m0 (Maybe (BuildTopState t))
-scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
+    => Maybe BuildTopState
+    -> RealPath
+    -> m0 (Maybe BuildTopState)
+scanState s0 path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
     let proxy0 = Proxy @'RootLayer
         key0 = RootKey
 
     -- Create the watcher for the root temp portage directory
-    data0 <- watcherHelper key0 () path0
+    data0 <- watcherHelper s0 key0 () path0
 
     -- Gather a list of categories with existing directories
     cs :: [Category] <- scanDirectory proxy0 () path0
@@ -115,7 +110,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
 
         -- Create the watcher for the category directory
         let path1 = path0 `FS.append` toString c
-        data1 <- watcherHelper key1 c path1
+        data1 <- watcherHelper s0 key1 c path1
 
         -- Gather a set of packages with existing lockfiles and a
         -- list of packages with existing directories
@@ -128,7 +123,7 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
 
             -- Create the watcher for the package dir
             let path2 = path0 `FS.append` toString p
-            data2 <- watcherHelper key2 p path2
+            data2 <- watcherHelper s0 key2 p path2
 
             -- does the lock file exist?
             let lockFilePresent = p `S.member` ls
@@ -140,13 +135,13 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
                     key3 = TempDirKey p
 
                 -- Create the watcher for the temp dir
-                data3 <- watcherHelper key3 p path3
+                data3 <- watcherHelper s0 key3 p path3
 
                 -- does the log file exist?
                 ml <- scanDirectory proxy3 () path3
                 child3 <- forM ml $ \path4 -> do
                     -- Create the watcher for the build log file
-                    data4 <- watcherHelper (LogFileKey p) p path4
+                    data4 <- watcherHelper s0 (LogFileKey p) p path4
 
                     pure $ LogFileWatcher p data4
 
@@ -168,24 +163,21 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
         in  M.fromList . catMaybes <$> traverse mkTuple ks
 
     finish
-        :: ReaderT (Inotify.Inotify, Maybe (BuildTopState t)) m0 (Maybe a, b)
-        -> Inotify.Inotify
-        -> Maybe (BuildTopState t)
+        :: m0 (Maybe a, b)
         -> m0 (Maybe (a, b))
-    finish f inot s0 = runReaderT (fmap (\(ma, b) -> (,b) <$> ma) f) (inot,s0)
+    finish f = fmap (\(ma, b) -> (,b) <$> ma) f
 
     cleanupOldState :: forall m.
-        (MonadIO m, MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m)
-        => Watcher 'RootLayer t (WatcherData t) -> m ()
-    cleanupOldState newWatcher = do
-        (_, oldState) <- ask
-        forM_ oldState $ \(oldWatcher, _) -> W.updateAll go oldWatcher
+        (MonadIO m, MonadBuildTop m)
+        => Watcher 'RootLayer WatcherData -> m ()
+    cleanupOldState newWatcher =
+        forM_ s0 $ \(oldWatcher, _) -> W.updateAll go oldWatcher
       where
         go :: forall x. BasicLayer x
-            => Watcher x t (WatcherData t)
-            -> m (Watcher x t (WatcherData t))
+            => Watcher x WatcherData
+            -> m (Watcher x WatcherData)
         go w = do
-            (inot, _) <- ask
+            inot <- askInotify
             -- If the current node doesn't exist in the new tree, we run a
             -- cleanup action.
             unless (isJust (W.lookup (W.watcherKey w) newWatcher)) $
@@ -196,22 +188,21 @@ scanState path0 = finish $ flip runStateT M.empty $ runMaybeT $ do
 
 -- | When certain events fire, we need to update the state of the Watcher
 updateWatchState
-    :: forall t m0. (Reflex t, TriggerEvent t m0, MonadIO m0)
-    => Inotify.Inotify
-    -> Inotify.Event
+    :: forall m0. (MonadIO m0, MonadBuildTop m0)
+    => Inotify.Event
     -> BuildTopEvent
-    -> BuildTopState t
-    -> m0 (BuildTopState t)
-updateWatchState i ie e0 s0@(w0,wm0) = finish $ case e0 of
+    -> BuildTopState
+    -> m0 BuildTopState
+updateWatchState ie e0 s0@(w0,wm0) = finish $ case e0 of
     CategoryEvent AddEvent cat -> do
         let key = RootKey
-        d <- withFilePath $ watcherHelper key ()
+        d <- withFilePath $ watcherHelper (Just s0) key ()
         ins $ InsertPayload key $ CategoryWatcher M.empty cat d
     CategoryEvent RemoveEvent cat -> del $ CategoryKey cat
     PackageEvent AddEvent pkg -> do
         let cat = getCategory pkg
             key = CategoryKey cat
-        d <- withFilePath $ watcherHelper key cat
+        d <- withFilePath $ watcherHelper (Just s0) key cat
         ins $ InsertPayload key $ PackageWatcher Nothing pkg d
     PackageEvent RemoveEvent pkg -> del $ PackageKey pkg
     LockFileEvent e pkg ->
@@ -221,25 +212,25 @@ updateWatchState i ie e0 s0@(w0,wm0) = finish $ case e0 of
         in pure $ W.updateLockFile b pkg w0
     TempDirEvent AddEvent pkg -> do
         let key = PackageKey pkg
-        d <- withFilePath $ watcherHelper key pkg
+        d <- withFilePath $ watcherHelper (Just s0) key pkg
         ins $ InsertPayload key $ TempDirWatcher Nothing pkg d
     TempDirEvent RemoveEvent pkg -> del $ TempDirKey pkg
     LogFileEvent AddEvent pkg -> do
         let key = TempDirKey pkg
-        d <- withFilePath $ watcherHelper key pkg
+        d <- withFilePath $ watcherHelper (Just s0) key pkg
         ins $ InsertPayload key $ LogFileWatcher pkg d
     LogFileEvent RemoveEvent pkg -> del $ LogFileKey pkg
     LogFileWriteEvent _ -> pure w0
   where
 
     ins :: Applicative f
-        => InsertPayload t (WatcherData t)
-        -> f (Watcher 'RootLayer t (WatcherData t))
+        => InsertPayload WatcherData
+        -> f (Watcher 'RootLayer WatcherData)
     ins payload = pure $ W.insert payload w0
 
     del :: (BasicLayer l, Applicative f)
         => WatcherKey l
-        -> f (Watcher 'RootLayer t (WatcherData t))
+        -> f (Watcher 'RootLayer WatcherData)
     del key = pure $ W.delete (DeletePayload key) w0
 
     withFilePath :: (RealPath -> r) -> r
@@ -250,39 +241,35 @@ updateWatchState i ie e0 s0@(w0,wm0) = finish $ case e0 of
                 , show wd
                 , "in WatchMap" ]
         in case M.lookup wd wm0 of
-                Just wmd -> withWatchMapData wmd $ \_ _ _ _ fp -> f fp
+                Just wmd -> withWatchMapData wmd $ \_ _ _ fp -> f fp
                 Nothing -> error errMsg
 
     finish
         :: MaybeT
-            ( StateT
-                WatchMap
-                (ReaderT (Inotify.Inotify, Maybe (BuildTopState t)) m0)
-            )
-            (Watcher 'RootLayer t (WatcherData t))
-        -> m0 (BuildTopState t)
+            (StateT WatchMap m0)
+            (Watcher 'RootLayer WatcherData)
+        -> m0 BuildTopState
     finish m = do
         -- Create the environment needed for watchHelper
-        (mw, wm) <- runReaderT (runStateT (runMaybeT m) wm0) (i, Just s0)
+        (mw, wm) <- runStateT (runMaybeT m) wm0
         -- Return the new state if a new Watcher was created, otherwise
         -- return the old state.
         pure $ maybe s0 (,wm) mw
 
 watcherHelper
-    :: forall l t m.
+    :: forall l m.
         ( BasicLayer l
         , HasFilter l
-        , Reflex t
-        , TriggerEvent t m
         , MonadIO m
         , MonadState WatchMap m
-        , MonadReader (Inotify.Inotify, Maybe (BuildTopState t)) m
+        , MonadBuildTop m
         )
-    => WatcherKey l
+    => Maybe BuildTopState
+    -> WatcherKey l
     -> FilterInput l
     -> RealPath
-    -> MaybeT m (WatcherData t)
-watcherHelper key filtIn rp = do
+    -> MaybeT m WatcherData
+watcherHelper s0 key filtIn rp = do
     let proxy = Proxy @l
         check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
@@ -291,40 +278,40 @@ watcherHelper key filtIn rp = do
         (RealPath path) = rp
     liftIO (check path) >>= guard
 
-    (iWatch, rEvent, eAct) <- recycleState <|> createState proxy
-    let mapData = WatchMapData eAct filt key filtIn rp
+    (iWatch) <- recycleState <|> createState proxy
+    let mapData = WatchMapData filt key filtIn rp
     modify $ M.insert iWatch mapData
 
     pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
 
-    pure $ WatcherData iWatch rEvent
+    pure $ WatcherData iWatch
   where
     recycleState
-        :: MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
+        :: MaybeT m Inotify.Watch
     recycleState = do
-        (_, oldState) <- ask
-        (oldWatcher, oldWatchMap) <- liftMaybe oldState
+        (oldWatcher, _) <- liftMaybe s0
         w <- liftMaybe $ W.lookup key oldWatcher
-        let (WatcherData iWatch rEvent) = W.extract w
-        case M.lookup iWatch oldWatchMap of
-            Just (WatchMapData eAct _ _ _ _) ->
-                pure (iWatch, rEvent, eAct)
-            Nothing -> liftIO
-                $ error "iWatch found but it's not in oldWatchMap!"
+        let (WatcherData iWatch) = W.extract w
+        pure iWatch
 
     createState
         :: Proxy l
-        -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
+        -> MaybeT m Inotify.Watch
     createState proxy = do
-        (inot, _) <- ask
+        inot <- askInotify
         initWatcher proxy filtIn inot rp
 
-initWatcher :: (BasicLayer l, HasFilter l, Reflex t, TriggerEvent t m, MonadIO m)
+initWatcher
+    :: ( BasicLayer l
+       , HasFilter l
+       , MonadIO m
+       , MonadBuildTop m
+       )
     => Proxy l
     -> FilterInput l
     -> Inotify.Inotify
     -> RealPath
-    -> MaybeT m (Inotify.Watch, Event t MyEvent, MyEvent -> IO ())
+    -> MaybeT m Inotify.Watch
 initWatcher proxy filtIn i rp = do
     let check = case W.watcherType proxy of
             WatchDirectory -> doesDirectoryExist
@@ -335,7 +322,7 @@ initWatcher proxy filtIn i rp = do
     let m = layerMask proxy
     w <- liftIO $ Inotify.addWatch i p (layerMask proxy)
     pTraceMForceColor $ unwords ["Added watcher to inotify:", show i, show p, show m]
-    (e, eIO) <- newTriggerEvent
+    fireE <- askFireEvent
 
     -- Race condition: interesting contents may have been created in the
     -- directory _after_ the 'Inotify.Watch' was initialized. Scan the
@@ -347,6 +334,6 @@ initWatcher proxy filtIn i rp = do
         let checkFile = filePathFilter (layerFilter proxy filtIn)
         fs <- lenientListDirectory rp
         es <- witherM checkFile fs
-        mapM_ eIO (That <$> es)
+        mapM_ fireE (That <$> es)
 
-    pure (w, e, eIO)
+    pure w
