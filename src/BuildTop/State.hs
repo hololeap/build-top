@@ -27,7 +27,6 @@ import Data.Maybe (isJust)
 import Data.Proxy
 import qualified Data.Set as S
 import Data.These
-import Reflex
 import System.Directory
 import qualified System.Linux.Inotify as Inotify
 import Witherable
