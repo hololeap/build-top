@@ -109,7 +109,7 @@ delete (DeletePayload key) =
             | otherwise = pure w
     in runIdentity
         . alter
-            (AlterPayload key (runMaybeT . (f <=< liftMaybe)))
+            (AlterPayload key (alterMaybeT f))
 
 -- | Update the state of the lock file for a given package.
 updateLockFile
@@ -215,7 +215,7 @@ instance ParentLayer 'CategoryLayer where
         cs' <- case up of
             AlterPayload (PackageKey pkg) f ->
                 let alt (b,w) = (b,) <$> MaybeT (f (Just w))
-                in M.alterF (runMaybeT . (alt <=< liftMaybe)) pkg cs
+                in M.alterF (alterMaybeT alt) pkg cs
             AlterPayload (TempDirKey pkg) _ -> sendDownstream pkg
             AlterPayload (LogFileKey pkg) _ -> sendDownstream pkg
             _ -> pure cs
@@ -223,7 +223,7 @@ instance ParentLayer 'CategoryLayer where
       where
         sendDownstream pkg =
             let alt (b,w) = (b,) <$> lift (alter up w)
-            in M.alterF (runMaybeT . (alt <=< liftMaybe)) pkg cs
+            in M.alterF (alterMaybeT alt) pkg cs
 
 instance ParentLayer 'PackageLayer where
     type ChildContainer 'PackageLayer = Maybe

@@ -236,7 +236,7 @@ updateWatchState ie e0 s0@(w0,wm0) = finish $ case e0 of
         let f w = do
                 liftIO $ Inotify.rmWatch inot $ getWatch $ W.extract w
                 empty
-            payload = AlterPayload key (runMaybeT . (f <=< liftMaybe))
+            payload = AlterPayload key (alterMaybeT f)
         W.alter payload w0
 
     withFilePath :: (RealPath -> r) -> r
