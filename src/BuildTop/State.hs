@@ -15,7 +15,7 @@ module BuildTop.State
     , updateWatchState
     ) where
 
-import Control.Applicative ((<|>))
+import Control.Applicative ((<|>), empty)
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.State.Strict
@@ -46,7 +46,7 @@ import BuildTop.Watcher
     , BasicLayer
     , WatcherKey(..)
     , InsertPayload(..)
-    , DeletePayload(..)
+    , AlterPayload(..)
     )
 import qualified BuildTop.Watcher as W
 
@@ -228,10 +228,16 @@ updateWatchState ie e0 s0@(w0,wm0) = finish $ case e0 of
         -> f (Watcher 'RootLayer WatcherData)
     ins payload = pure $ W.insert payload w0
 
-    del :: (BasicLayer l, Applicative f)
+    del :: (BasicLayer l, MonadIO m, MonadBuildTop m)
         => WatcherKey l
-        -> f (Watcher 'RootLayer WatcherData)
-    del key = pure $ W.delete (DeletePayload key) w0
+        -> m (Watcher 'RootLayer WatcherData)
+    del key = do
+        inot <- askInotify
+        let f w = do
+                liftIO $ Inotify.rmWatch inot $ getWatch $ W.extract w
+                empty
+            payload = AlterPayload key (runMaybeT . (f <=< liftMaybe))
+        W.alter payload w0
 
     withFilePath :: (RealPath -> r) -> r
     withFilePath f =
