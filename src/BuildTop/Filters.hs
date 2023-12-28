@@ -135,13 +135,10 @@ instance HasFilter 'TempDirLayer where
 
 instance HasFilter 'LogFileLayer where
     type FilterInput 'LogFileLayer = Package
-    layerMask _ = in_CLOSE_WRITE
+    layerMask _ = in_CLOSE_WRITE <> in_MODIFY <> in_ACCESS
     layerFilter _ p = EventFilter
-        ( \(Event _ m _ _) -> case
-            ( isSubset in_CLOSE_WRITE m
-            ) of
-                (True) -> Just $ LogFileWriteEvent p
-                _ -> Nothing
+          -- The mask _should_ only deliver relevant events
+        ( \_ -> Just $ LogFileWriteEvent p
         )
         ( \_ -> pure Nothing -- Nothing can be done with just a "build.log" string
         )
