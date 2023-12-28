@@ -2,6 +2,8 @@
 
 module BuildTop.Util where
 
+import Control.Concurrent.Async (Async, async)
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Maybe
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
@@ -30,3 +32,7 @@ liftMaybe = MaybeT . pure
 -- | Convert a 'MaybeT' function into a function suitable for @alter@.
 alterMaybeT :: Monad m => (a -> MaybeT m b) -> Maybe a -> m (Maybe b)
 alterMaybeT f = runMaybeT . (f <=< liftMaybe)
+
+-- | Run an IO action indefinitely in another thread
+foreverThread :: MonadIO m => IO a -> m (Async b)
+foreverThread = liftIO . async . forever

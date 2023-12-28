@@ -1,6 +1,9 @@
 {-# Language FlexibleContexts #-}
 
-module BuildTop.Loop where
+module BuildTop.Loop
+    ( eventLoop
+    , scanLoop
+    ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
@@ -16,6 +19,7 @@ import qualified System.Linux.Inotify as Inotify
 import BuildTop.Filesystem (RealPath)
 import BuildTop.State
 import BuildTop.Types
+import BuildTop.Util
 
 import Debug.Pretty.Simple
 
@@ -27,31 +31,28 @@ eventLoop :: (MonadIO m, MonadBuildTop m)
 eventLoop mvar = do
     i <- askInotify
     fireE <- askFireEvent
-    liftIO $ async $ forever $ do
+    foreverThread $ do
         e@(Inotify.Event w _ _ _) <- Inotify.getEvent i
 
-        s0@(_,wm0) <- takeMVar mvar
+        modifyMVar_ mvar $ \s0@(_,wm0) -> do
+            let err = error -- FIXME: This may not be a wise idea inside a thread
+                    $ "could not find Watch " ++ show w ++ " in WatchMap"
+            d <- maybe err pure $ M.lookup w wm0
 
-        let err = error -- FIXME: This may not be a wise idea inside a thread
-                $ "could not find Watch " ++ show w ++ " in WatchMap"
-        d <- maybe err pure $ M.lookup w wm0
-
-        -- updateWatchState requires a MonadBuildTop (e.g. ReaderT)
-        s <- flip runReaderT (i,fireE) $ withWatchMapData d $ \filt _ _ _ ->
-            case filt e of
-                Nothing -> do
-                    liftIO $ fireE $ This e
-                    pure s0
-                Just bte -> do
-                    liftIO $ fireE $ These e bte
-                    -- We can run this if the filter returned a BuildTopState
-                    updateWatchState e bte s0
-
-        putMVar mvar s
+            -- updateWatchState requires a MonadBuildTop (e.g. ReaderT)
+            flip runReaderT (i,fireE) $ withWatchMapData d $ \filt _ _ _ ->
+                case filt e of
+                    Nothing -> do
+                        liftIO $ fireE $ This e
+                        pure s0
+                    Just bte -> do
+                        liftIO $ fireE $ These e bte
+                        -- We can run this if the filter returned a BuildTopState
+                        updateWatchState e bte s0
 
 -- | Repeatedly scan the portage temp dir, firing events and updating state.
 --
---   This repeats every 1s
+--   This repeats every 3s
 scanLoop :: (MonadIO m, MonadBuildTop m)
     => RealPath
     -> MVar BuildTopState
@@ -59,17 +60,13 @@ scanLoop :: (MonadIO m, MonadBuildTop m)
 scanLoop path mvar = do
     i <- askInotify
     fireE <- askFireEvent
-    liftIO $ async $ forever $ do
+    foreverThread $ do
         pTraceMForceColor "scanLoop fired"
 
-        s0 <- takeMVar mvar
+        modifyMVar_ mvar $ \s0 -> do
+            flip runReaderT (i, fireE) $ do
+                let err = error -- FIXME: This may not be a wise idea inside a thread
+                        $ "portage temp dir not found? " ++ show path
+                maybe err pure =<< scanState (Just s0) path
 
-        -- scanState requires a MonadBuildTop (e.g. ReaderT)
-        s <- flip runReaderT (i, fireE) $ do
-            let err = error -- FIXME: This may not be a wise idea inside a thread
-                    $ "portage temp dir not found? " ++ show path
-            maybe err pure =<< scanState (Just s0) path
-
-        putMVar mvar s
-
-        threadDelay 1000000
+        threadDelay 3000000
