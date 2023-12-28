@@ -52,6 +52,7 @@ library
         , BuildTop.Filesystem
         , BuildTop.Filters
         , BuildTop.Loop
+        , BuildTop.Paths
         , BuildTop.State
         , BuildTop.Types
         , BuildTop.Util
