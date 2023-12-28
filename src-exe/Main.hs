@@ -28,12 +28,12 @@ app = mdo
         let err = error
                 $ "portage temp dir not found? " ++ show portageTempDir
         s@(rw,_) <- maybe err pure =<< scanState Nothing portageTempDir
-        wmRef <- liftIO $ newMVar s
+        sMVar <- liftIO $ newMVar s
         let debugEvent :: MyEvent -> IO ()
             debugEvent = pPrintForceColor . first (printEvent rw)
         _ <- performEvent $ liftIO . debugEvent <$> e
-        ea <- eventLoop wmRef
-        sa <- scanLoop portageTempDir wmRef
+        sa <- scanLoop portageTempDir sMVar
+        ea <- eventLoop sMVar
         pure (ea,sa)
     liftIO $ putStrLn "end of 'app'"
     pure never
