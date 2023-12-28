@@ -283,11 +283,10 @@ watcherHelper s0 key filtIn rp = do
         (RealPath path) = rp
     liftIO (check path) >>= guard
 
-    (iWatch) <- recycleState <|> createState proxy
+    iWatch <- recycleState <|> createState proxy path
     let mapData = WatchMapData filt key filtIn rp
     modify $ M.insert iWatch mapData
 
-    pTraceMForceColor $ unwords ["watcher created for", path, "(" ++ show iWatch ++ ")"]
 
     pure $ WatcherData iWatch
   where
@@ -301,10 +300,18 @@ watcherHelper s0 key filtIn rp = do
 
     createState
         :: Proxy l
+        -> FilePath
         -> MaybeT m Inotify.Watch
-    createState proxy = do
+    createState proxy path = do
         inot <- askInotify
-        initWatcher proxy filtIn inot rp
+        iWatch <- initWatcher proxy filtIn inot rp
+        pTraceMForceColor
+            $ unwords
+                [ "watcher created for"
+                , path
+                , "(" ++ show iWatch ++ ")"
+                ]
+        pure iWatch
 
 initWatcher
     :: ( BasicLayer l
