@@ -2,6 +2,7 @@
 
 module BuildTop.Util where
 
+import Control.Applicative (Alternative, empty)
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Maybe
 import Data.ByteString (ByteString)
@@ -25,9 +26,10 @@ decodeString = T.unpack . T.decodeUtf8
 parseMaybe :: Parsable a Identity () String => String -> Maybe a
 parseMaybe = either (const Nothing) Just . runParsable ""
 
--- | Lift a 'Maybe' value into a 'MaybeT'
-liftMaybe :: Applicative m => Maybe a -> MaybeT m a
-liftMaybe = MaybeT . pure
+-- | Lift a 'Maybe' value into an 'Alternative'
+liftMaybe :: Alternative f => Maybe a -> f a
+liftMaybe (Just x) = pure x
+liftMaybe Nothing = empty
 
 -- | Convert a 'MaybeT' function into a function suitable for @alter@.
 alterMaybeT :: Monad m => (a -> MaybeT m b) -> Maybe a -> m (Maybe b)

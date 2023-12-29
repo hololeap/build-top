@@ -69,6 +69,7 @@ library
         , bytestring
         , containers
         , directory
+        , dlist
         , filepath
         , hashable
         , linux-inotify >=0.3
