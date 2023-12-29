@@ -81,6 +81,8 @@ library
         , these
         , transformers
         , unordered-containers
+        , unliftio
+        , unliftio-core
         , witherable
     hs-source-dirs:   src
     default-language: Haskell2010
@@ -102,6 +104,7 @@ executable build-top
         , pretty-simple
         , reflex
         , transformers
+        , unliftio
         , unordered-containers
 
     hs-source-dirs:   src-exe

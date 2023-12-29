@@ -2,13 +2,13 @@
 
 module BuildTop.Util where
 
-import Control.Concurrent.Async (Async, async)
-import Control.Monad.IO.Class
+import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Maybe
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import System.FilePath
+import UnliftIO.Async (Async, async)
 
 import Data.Parsable hiding ((<|>))
 import Distribution.Portage.Types
@@ -34,5 +34,5 @@ alterMaybeT :: Monad m => (a -> MaybeT m b) -> Maybe a -> m (Maybe b)
 alterMaybeT f = runMaybeT . (f <=< liftMaybe)
 
 -- | Run an IO action indefinitely in another thread
-foreverThread :: MonadIO m => IO a -> m (Async b)
-foreverThread = liftIO . async . forever
+foreverThread :: MonadUnliftIO m => m a -> m (Async b)
+foreverThread = async . forever
